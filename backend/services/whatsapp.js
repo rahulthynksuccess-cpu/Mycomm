@@ -12,26 +12,6 @@ const SESSIONS_DIR = path.join(__dirname, '..', 'sessions');
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
-// Detect system Chromium - Railway installs it via nixpacks.toml
-function getChromiumPath() {
-  const candidates = [
-    process.env.CHROMIUM_PATH,
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome-stable',
-    '/usr/bin/google-chrome',
-    '/snap/bin/chromium',
-  ];
-  for (const p of candidates) {
-    if (p && fs.existsSync(p)) {
-      console.log('Using Chromium at:', p);
-      return p;
-    }
-  }
-  console.warn('No system Chromium found, puppeteer-core will use its default');
-  return undefined;
-}
-
 async function initWhatsApp(io) {
   const savedSessions = getSavedSessionIds();
   console.log('Found', savedSessions.length, 'saved WA sessions:', savedSessions);
@@ -46,38 +26,27 @@ async function createClient(accountId, io) {
     return;
   }
 
-  statuses[accountId] = 'initializing';
+  statuses[accountId] = { status: 'initializing' };
   io.emit('wa:status', { accountId, status: 'initializing' });
-
-  const chromiumPath = getChromiumPath();
-
-  const puppeteerConfig = {
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--single-process',
-      '--disable-gpu',
-      '--disable-extensions',
-      '--disable-software-rasterizer',
-    ],
-  };
-
-  // Use system chromium if found (required on Railway)
-  if (chromiumPath) {
-    puppeteerConfig.executablePath = chromiumPath;
-  }
 
   const client = new Client({
     authStrategy: new LocalAuth({
       clientId: accountId,
       dataPath: SESSIONS_DIR,
     }),
-    puppeteer: puppeteerConfig,
+    puppeteer: {
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--single-process',
+        '--disable-gpu',
+      ],
+    },
     webVersionCache: {
       type: 'remote',
       remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
@@ -159,14 +128,16 @@ async function createClient(accountId, io) {
 
   client.on('disconnected', (reason) => {
     console.log(accountId, 'disconnected:', reason);
-    statuses[accountId] = 'disconnected';
+    statuses[accountId] = { status: 'disconnected', reason };
     io.emit('wa:status', { accountId, status: 'disconnected', reason });
     delete clients[accountId];
   });
 
-  await client.initialize().catch(err => {
+  // Run initialize in background — do NOT await it.
+  // It blocks until the browser closes, which would hang the HTTP request.
+  client.initialize().catch(err => {
     console.error('Failed to init', accountId, ':', err.message);
-    statuses[accountId] = 'error';
+    statuses[accountId] = { status: 'error', error: err.message };
     io.emit('wa:status', { accountId, status: 'error', error: err.message });
   });
 
@@ -178,7 +149,10 @@ async function addNewSession(accountId, io) {
   if (totalSessions >= MAX_ACCOUNTS) {
     throw new Error('Maximum of ' + MAX_ACCOUNTS + ' WhatsApp accounts reached.');
   }
-  await createClient(accountId, io);
+  // Don't await — createClient runs browser in background
+  createClient(accountId, io).catch(err => {
+    console.error('createClient error:', err.message);
+  });
 }
 
 async function sendWAMessage(accountId, to, body) {
