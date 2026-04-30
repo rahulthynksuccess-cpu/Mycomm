@@ -5,7 +5,6 @@ nixPkgs = [
   "nss",
   "freetype",
   "harfbuzz",
-  "ca-certificates",
   "fontconfig"
 ]
 
