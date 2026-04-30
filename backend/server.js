@@ -64,7 +64,15 @@ io.on('connection', (socket) => {
   });
   socket.on('disconnect', () => console.log('Client disconnected:', socket.id));
 });
+const path = require('path');
 
+// Serve React build
+app.use(express.static(path.join(__dirname, '../frontend/build')));
+
+// Catch-all: send React app for any non-API route
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../frontend/build', 'index.html'));
+});
 // ── Start server ───────────────────────────────────────
 server.listen(PORT, '0.0.0.0', async () => {
   console.log('\n MyComms backend running on port', PORT);
