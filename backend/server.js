@@ -66,10 +66,8 @@ io.on('connection', (socket) => {
 });
 const path = require('path');
 
-// Serve React build
+// Serve React frontend
 app.use(express.static(path.join(__dirname, '../frontend/build')));
-
-// Catch-all: send React app for any non-API route
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../frontend/build', 'index.html'));
 });
