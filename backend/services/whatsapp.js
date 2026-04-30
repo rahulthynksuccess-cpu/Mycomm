@@ -5,6 +5,7 @@ const fs = require('fs');
 
 const clients = {};
 const statuses = {};
+const qrCodes = {}; // store latest QR per account
 
 const MAX_ACCOUNTS = parseInt(process.env.WA_MAX_ACCOUNTS || '5');
 const SESSIONS_DIR = path.join(__dirname, '..', 'sessions');
@@ -85,28 +86,31 @@ async function createClient(accountId, io) {
 
   client.on('qr', async (qr) => {
     console.log('QR generated for', accountId);
-    statuses[accountId] = 'qr';
+    statuses[accountId] = { status: 'qr' };
     const qrDataUrl = await qrcode.toDataURL(qr);
+    qrCodes[accountId] = qrDataUrl; // store for late-joining clients
     io.emit('wa:qr', { accountId, qr: qrDataUrl });
     io.emit('wa:status', { accountId, status: 'qr' });
   });
 
   client.on('authenticated', () => {
     console.log(accountId, 'authenticated');
-    statuses[accountId] = 'authenticated';
+    statuses[accountId] = { status: 'authenticated' };
+    delete qrCodes[accountId];
     io.emit('wa:status', { accountId, status: 'authenticated' });
   });
 
   client.on('auth_failure', (msg) => {
     console.error(accountId, 'auth failed:', msg);
-    statuses[accountId] = 'auth_failure';
+    statuses[accountId] = { status: 'auth_failure', error: msg };
     io.emit('wa:status', { accountId, status: 'auth_failure', error: msg });
   });
 
   client.on('ready', async () => {
     console.log(accountId, 'is ready!');
-    statuses[accountId] = 'ready';
     const info = client.info;
+    statuses[accountId] = { status: 'ready', phone: info.wid.user, name: info.pushname };
+    delete qrCodes[accountId];
     io.emit('wa:status', {
       accountId,
       status: 'ready',
@@ -235,6 +239,7 @@ async function disconnectSession(accountId) {
 }
 
 function getStatuses() { return statuses; }
+function getQRCodes() { return qrCodes; }
 
 function getSavedSessionIds() {
   if (!fs.existsSync(SESSIONS_DIR)) return [];
@@ -252,4 +257,5 @@ module.exports = {
   getChatMessages,
   disconnectSession,
   getStatuses,
+  getQRCodes,
 };

@@ -53,6 +53,21 @@ try {
 // ── Socket.io events ───────────────────────────────────
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
+
+  // Re-emit current statuses and QRs to newly connected client
+  socket.on('wa:requestStatus', () => {
+    try {
+      const { getStatuses, getQRCodes } = require('./services/whatsapp');
+      const statuses = getStatuses();
+      const qrs = getQRCodes();
+      Object.entries(statuses).forEach(([accountId, status]) => {
+        socket.emit('wa:status', { accountId, ...status });
+      });
+      Object.entries(qrs).forEach(([accountId, qr]) => {
+        socket.emit('wa:qr', { accountId, qr });
+      });
+    } catch (e) { console.error('requestStatus error:', e.message); }
+  });
   socket.on('wa:send', async ({ accountId, to, body }) => {
     try {
       const { sendWAMessage } = require('./services/whatsapp');
