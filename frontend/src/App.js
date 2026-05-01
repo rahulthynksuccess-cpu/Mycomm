@@ -6,7 +6,9 @@ import CalendarTab from './components/Calendar/CalendarTab';
 import SettingsTab from './components/Shared/SettingsTab';
 import './App.css';
 
-const SOCKET_URL = process.env.REACT_APP_API_URL || 'http://localhost:4000';
+// Same-origin in production; localhost in dev
+const SOCKET_URL = process.env.REACT_APP_API_URL ||
+  (process.env.NODE_ENV === 'production' ? window.location.origin : 'http://localhost:4000');
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('whatsapp');
