@@ -1,14 +1,27 @@
 [phases.setup]
 nixPkgs = [
   "nodejs_20",
-  "chromium",
   "nss",
   "freetype",
   "harfbuzz",
   "ca-certificates",
   "wget",
-  "font-liberation",
-  "fontconfig"
+  "fontconfig",
+  "expat",
+  "libdrm",
+  "mesa",
+  "libxkbcommon",
+  "at-spi2-atk",
+  "cups",
+  "dbus",
+  "libxrandr",
+  "xorg.libX11",
+  "xorg.libXcomposite",
+  "xorg.libXdamage",
+  "xorg.libXext",
+  "xorg.libXfixes",
+  "xorg.libxcb",
+  "xorg.libXScrnSaver"
 ]
 
 [phases.install]

@@ -1,35 +1,18 @@
 const router = require('express').Router();
 const { v4: uuidv4 } = require('uuid');
 const {
-  addNewSession,
-  getRecentChats,
-  getChatMessages,
-  disconnectSession,
-  getStatuses,
-  sendWAMessage,
-  getDebugInfo,
+  addNewSession, getRecentChats, getChatMessages,
+  disconnectSession, getStatuses, sendWAMessage,
 } = require('../services/whatsapp');
 
-// GET /api/whatsapp/debug — server-side diagnosis
-router.get('/debug', (req, res) => {
-  res.json(getDebugInfo());
-});
-// GET /api/whatsapp/status — all session statuses
-router.get('/status', (req, res) => {
-  res.json(getStatuses());
-});
+router.get('/status', (req, res) => res.json(getStatuses()));
 
-// POST /api/whatsapp/sessions — add a new WhatsApp session (responds immediately, init is async)
 router.post('/sessions', async (req, res) => {
   try {
     const { accountId } = req.body;
     const id = accountId || `wa_${uuidv4().slice(0, 8)}`;
     const io = req.app.get('io');
-
-    // Respond immediately — do NOT await; init can take 30–60s
-    res.json({ success: true, accountId: id, message: 'Session initializing — watch for QR code event.' });
-
-    // Fire-and-forget
+    res.json({ success: true, accountId: id });
     addNewSession(id, io).catch(err => {
       console.error('addNewSession error:', err.message);
       io.emit('wa:status', { accountId: id, status: 'error', error: err.message });
@@ -39,7 +22,6 @@ router.post('/sessions', async (req, res) => {
   }
 });
 
-// DELETE /api/whatsapp/sessions/:accountId — disconnect session
 router.delete('/sessions/:accountId', async (req, res) => {
   try {
     await disconnectSession(req.params.accountId);
@@ -49,7 +31,6 @@ router.delete('/sessions/:accountId', async (req, res) => {
   }
 });
 
-// GET /api/whatsapp/:accountId/chats — get recent chats
 router.get('/:accountId/chats', async (req, res) => {
   try {
     const chats = await getRecentChats(req.params.accountId, parseInt(req.query.limit) || 30);
@@ -59,7 +40,6 @@ router.get('/:accountId/chats', async (req, res) => {
   }
 });
 
-// GET /api/whatsapp/:accountId/chats/:chatId/messages — get messages in a chat
 router.get('/:accountId/chats/:chatId/messages', async (req, res) => {
   try {
     const msgs = await getChatMessages(
@@ -73,11 +53,10 @@ router.get('/:accountId/chats/:chatId/messages', async (req, res) => {
   }
 });
 
-// POST /api/whatsapp/:accountId/send — send a message
 router.post('/:accountId/send', async (req, res) => {
   try {
     const { to, body } = req.body;
-    if (!to || !body) return res.status(400).json({ error: 'to and body are required.' });
+    if (!to || !body) return res.status(400).json({ error: 'to and body required.' });
     await sendWAMessage(req.params.accountId, to, body);
     res.json({ success: true });
   } catch (err) {
