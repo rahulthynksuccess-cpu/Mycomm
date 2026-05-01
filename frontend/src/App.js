@@ -6,7 +6,7 @@ import CalendarTab from './components/Calendar/CalendarTab';
 import SettingsTab from './components/Shared/SettingsTab';
 import './App.css';
 
-const SOCKET_URL = process.env.REACT_APP_API_URL || (process.env.NODE_ENV === 'production' ? window.location.origin : 'http://localhost:4000');
+const SOCKET_URL = process.env.REACT_APP_API_URL || 'http://localhost:4000';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('whatsapp');
@@ -20,10 +20,7 @@ export default function App() {
     const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] });
     socketRef.current = socket;
 
-    socket.on('connect', () => {
-      console.log('Socket connected');
-      socket.emit('wa:requestStatus'); // ask backend to re-emit current statuses/QRs
-    });
+    socket.on('connect', () => console.log('Socket connected'));
 
     // WhatsApp real-time events
     socket.on('wa:status', ({ accountId, status, phone, name, error }) => {

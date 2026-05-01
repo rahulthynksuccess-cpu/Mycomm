@@ -72,13 +72,10 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
     const id = newAccountId.trim() || `wa${Date.now()}`;
     setAddingSession(false);
     setNewAccountId('');
-    setShowQR(id); // open QR modal immediately — shows spinner until QR arrives
     try {
       await waAPI.addSession(id);
-    } catch (e) {
-      setShowQR(null);
-      alert(e.message);
-    }
+      setTimeout(() => setShowQR(id), 1500);
+    } catch (e) { alert(e.message); }
   }
 
   const currentChats = activeAccount ? (chats[activeAccount] || []) : [];
@@ -257,22 +254,12 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
       )}
 
       {/* QR modal */}
-      {showQR && (
+      {showQR && qrCodes[showQR] && (
         <div className="qr-overlay" onClick={() => setShowQR(null)}>
           <div className="qr-card" onClick={e => e.stopPropagation()}>
             <h3>Scan with WhatsApp</h3>
             <p>WhatsApp → Linked Devices → Link a Device</p>
-            {qrCodes[showQR] ? (
-              <img src={qrCodes[showQR]} alt="QR Code" style={{ width: 256, height: 256 }} />
-            ) : (
-              <div style={{ width: 256, height: 256, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, background: 'var(--bg2)', borderRadius: 12 }}>
-                <div style={{ width: 48, height: 48, border: '4px solid var(--accent)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
-                <div style={{ fontSize: 13, color: 'var(--text2)', textAlign: 'center' }}>
-                  Starting WhatsApp…<br />
-                  <span style={{ fontSize: 11, color: 'var(--text3)' }}>This takes ~30 seconds</span>
-                </div>
-              </div>
-            )}
+            <img src={qrCodes[showQR]} alt="QR Code" />
             <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text3)' }}>Account: <strong>{showQR}</strong></div>
             <button className="btn" style={{ marginTop: 14, width: '100%' }} onClick={() => setShowQR(null)}>Close</button>
           </div>

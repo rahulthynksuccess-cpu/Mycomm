@@ -324,8 +324,3 @@ select.input {
 .cal-day.today { background: var(--accent-t); }
 .cal-day-num { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
 .cal-event { background: var(--accent); color: #fff; border-radius: 4px; padding: 2px 6px; font-size: 11px; margin-bottom: 2px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
