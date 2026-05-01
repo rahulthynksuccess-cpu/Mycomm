@@ -8,3 +8,15 @@ healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
+
+[[deploy.environmentVariables]]
+name = "PORT"
+value = "8080"
+
+[[deploy.environmentVariables]]
+name = "PUPPETEER_SKIP_CHROMIUM_DOWNLOAD"
+value = "true"
+
+[[deploy.environmentVariables]]
+name = "PUPPETEER_EXECUTABLE_PATH"
+value = "/usr/bin/chromium"

@@ -12,17 +12,39 @@ const SESSIONS_DIR = path.join(__dirname, '..', 'sessions');
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
+function findChromium() {
+  // Priority: env var > well-known system paths
+  const candidates = [
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    process.env.CHROME_BIN,
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+  ].filter(Boolean);
+
+  for (const p of candidates) {
+    try {
+      require('fs').accessSync(p, require('fs').constants.X_OK);
+      console.log('[WA] Using browser:', p);
+      return p;
+    } catch (_) {}
+  }
+  // Fall back to letting puppeteer decide (will use its downloaded Chrome)
+  console.warn('[WA] No system Chromium found — puppeteer will use its own (may fail without deps)');
+  return undefined;
+}
+
 function getPuppeteerOpts() {
+  const executablePath = findChromium();
   const args = [
     '--no-sandbox', '--disable-setuid-sandbox',
     '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas',
     '--no-first-run', '--no-zygote', '--single-process', '--disable-gpu',
+    '--disable-extensions', '--disable-default-apps',
   ];
   const opts = { args };
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-    opts.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-    console.log('[WA] Using browser at:', process.env.PUPPETEER_EXECUTABLE_PATH);
-  }
+  if (executablePath) opts.executablePath = executablePath;
   return opts;
 }
 
