@@ -11,7 +11,9 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
   const [addingSession, setAddingSession] = useState(false);
   const [newAccountId, setNewAccountId] = useState('');
   const [showQR, setShowQR] = useState(null);
+  const [qrTimeout, setQrTimeout] = useState(false);
   const messagesEndRef = useRef(null);
+  const qrTimerRef = useRef(null);
 
   const readyAccounts = Object.entries(statuses).filter(([, s]) => s.status === 'ready');
 
@@ -68,14 +70,22 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
     } catch (e) { alert('Failed to send: ' + e.message); }
   }
 
-  async function addSession() {
-    const id = newAccountId.trim() || `wa${Date.now()}`;
+  async function addSession(id) {
+    const accountId = id || (newAccountId.trim() || `wa${Date.now()}`);
     setAddingSession(false);
     setNewAccountId('');
+    setQrTimeout(false);
     try {
-      await waAPI.addSession(id);
-      // Show QR modal immediately — it will display a spinner until the QR arrives via socket
-      setShowQR(id);
+      // Remove old session if retrying
+      if (statuses[accountId]) {
+        await waAPI.removeSession(accountId).catch(() => {});
+        setWaStatuses(prev => { const n = { ...prev }; delete n[accountId]; return n; });
+      }
+      await waAPI.addSession(accountId);
+      setShowQR(accountId);
+      // Start 90s timeout — Chromium on Railway can be slow
+      clearTimeout(qrTimerRef.current);
+      qrTimerRef.current = setTimeout(() => setQrTimeout(true), 90000);
     } catch (e) { alert('Network error — check that REACT_APP_API_URL is set correctly.\n' + e.message); }
   }
 
@@ -262,12 +272,23 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
             <p>WhatsApp → Linked Devices → Link a Device</p>
             {qrCodes[showQR] ? (
               <img src={qrCodes[showQR]} alt="QR Code" />
+            ) : qrTimeout ? (
+              <div style={{ width: 256, height: 256, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, background: 'var(--bg2)', borderRadius: 8 }}>
+                <div style={{ fontSize: 32 }}>⚠️</div>
+                <div style={{ fontSize: 13, color: 'var(--text3)', textAlign: 'center' }}>
+                  QR generation timed out.<br />
+                  <span style={{ fontSize: 11 }}>Chromium may have failed to start on the server.</span>
+                </div>
+                <button className="btn btn-primary btn-sm" onClick={() => addSession(showQR)} style={{ marginTop: 8 }}>
+                  🔄 Retry
+                </button>
+              </div>
             ) : (
               <div style={{ width: 256, height: 256, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, background: 'var(--bg2)', borderRadius: 8 }}>
-                <div style={{ fontSize: 32 }}>⏳</div>
+                <div style={{ fontSize: 32, animation: 'spin 2s linear infinite' }}>⏳</div>
                 <div style={{ fontSize: 13, color: 'var(--text3)', textAlign: 'center' }}>
                   Generating QR code…<br />
-                  <span style={{ fontSize: 11 }}>This may take 20–40 seconds</span>
+                  <span style={{ fontSize: 11 }}>This may take 20–60 seconds on first launch</span>
                 </div>
               </div>
             )}
