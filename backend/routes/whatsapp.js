@@ -14,14 +14,21 @@ router.get('/status', (req, res) => {
   res.json(getStatuses());
 });
 
-// POST /api/whatsapp/sessions — add a new WhatsApp session
+// POST /api/whatsapp/sessions — add a new WhatsApp session (responds immediately, init is async)
 router.post('/sessions', async (req, res) => {
   try {
     const { accountId } = req.body;
     const id = accountId || `wa_${uuidv4().slice(0, 8)}`;
     const io = req.app.get('io');
-    addNewSession(id, io); // fire and forget — QR comes via socket
+
+    // Respond immediately — do NOT await; init can take 30–60s
     res.json({ success: true, accountId: id, message: 'Session initializing — watch for QR code event.' });
+
+    // Fire-and-forget
+    addNewSession(id, io).catch(err => {
+      console.error('addNewSession error:', err.message);
+      io.emit('wa:status', { accountId: id, status: 'error', error: err.message });
+    });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
