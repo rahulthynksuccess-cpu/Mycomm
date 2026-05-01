@@ -264,34 +264,38 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
         </div>
       )}
 
-      {/* QR modal — shows spinner until QR arrives via socket */}
+      {/* QR modal — shows spinner, error, or QR */}
       {showQR && (
         <div className="qr-overlay" onClick={() => setShowQR(null)}>
           <div className="qr-card" onClick={e => e.stopPropagation()}>
             <h3>Scan with WhatsApp</h3>
             <p>WhatsApp → Linked Devices → Link a Device</p>
+
             {qrCodes[showQR] ? (
               <img src={qrCodes[showQR]} alt="QR Code" />
-            ) : qrTimeout ? (
-              <div style={{ width: 256, height: 256, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, background: 'var(--bg2)', borderRadius: 8 }}>
+            ) : (statuses[showQR]?.status === 'error' || qrTimeout) ? (
+              <div style={{ width: 256, height: 256, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, background: 'var(--bg2)', borderRadius: 8, padding: 16 }}>
                 <div style={{ fontSize: 32 }}>⚠️</div>
-                <div style={{ fontSize: 13, color: 'var(--text3)', textAlign: 'center' }}>
-                  QR generation timed out.<br />
-                  <span style={{ fontSize: 11 }}>Chromium may have failed to start on the server.</span>
+                <div style={{ fontSize: 12, color: '#e05c5c', textAlign: 'center', wordBreak: 'break-word' }}>
+                  {statuses[showQR]?.error || 'QR timed out — Chromium may not be installed on the server.'}
                 </div>
-                <button className="btn btn-primary btn-sm" onClick={() => addSession(showQR)} style={{ marginTop: 8 }}>
+                <button className="btn btn-primary" onClick={() => addSession(showQR)} style={{ marginTop: 4, width: '100%' }}>
                   🔄 Retry
                 </button>
               </div>
             ) : (
               <div style={{ width: 256, height: 256, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, background: 'var(--bg2)', borderRadius: 8 }}>
-                <div style={{ fontSize: 32, animation: 'spin 2s linear infinite' }}>⏳</div>
+                <div style={{ fontSize: 32 }}>⏳</div>
                 <div style={{ fontSize: 13, color: 'var(--text3)', textAlign: 'center' }}>
-                  Generating QR code…<br />
+                  {statuses[showQR]?.status === 'initializing' ? 'Starting browser…' : 'Generating QR code…'}<br />
                   <span style={{ fontSize: 11 }}>This may take 20–60 seconds on first launch</span>
                 </div>
+                <button className="btn" onClick={() => addSession(showQR)} style={{ marginTop: 4, fontSize: 11, padding: '4px 10px' }}>
+                  🔄 Restart session
+                </button>
               </div>
             )}
+
             <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text3)' }}>Account: <strong>{showQR}</strong></div>
             <button className="btn" style={{ marginTop: 14, width: '100%' }} onClick={() => setShowQR(null)}>Close</button>
           </div>

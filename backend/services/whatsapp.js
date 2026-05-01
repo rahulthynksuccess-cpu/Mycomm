@@ -2,6 +2,7 @@ const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const path = require('path');
 const fs = require('fs');
+const { execSync } = require('child_process');
 
 const clients = {};
 const statuses = {};
@@ -11,23 +12,52 @@ const SESSIONS_DIR = path.join(__dirname, '..', 'sessions');
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
-// Detect system Chromium - Railway installs it via nixpacks.toml
+// Detect system Chromium — searches all known paths including nix store
 function getChromiumPath() {
+  // 1. Explicit env override
+  if (process.env.CHROMIUM_PATH && fs.existsSync(process.env.CHROMIUM_PATH)) {
+    console.log('Using CHROMIUM_PATH env:', process.env.CHROMIUM_PATH);
+    return process.env.CHROMIUM_PATH;
+  }
+  if (process.env.PUPPETEER_EXECUTABLE_PATH && fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
+    console.log('Using PUPPETEER_EXECUTABLE_PATH:', process.env.PUPPETEER_EXECUTABLE_PATH);
+    return process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+
+  // 2. Standard paths
   const candidates = [
-    process.env.CHROMIUM_PATH,
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
     '/usr/bin/google-chrome-stable',
     '/usr/bin/google-chrome',
     '/snap/bin/chromium',
+    '/run/current-system/sw/bin/chromium',
   ];
   for (const p of candidates) {
-    if (p && fs.existsSync(p)) {
-      console.log('Using Chromium at:', p);
-      return p;
-    }
+    if (fs.existsSync(p)) { console.log('Found Chromium at:', p); return p; }
   }
-  console.warn('No system Chromium found, puppeteer-core will use its default');
+
+  // 3. Search nix store (Railway nixpacks installs here)
+  try {
+    const nixStore = '/nix/store';
+    if (fs.existsSync(nixStore)) {
+      const dirs = fs.readdirSync(nixStore).filter(d => d.includes('chromium'));
+      for (const dir of dirs) {
+        const p = `${nixStore}/${dir}/bin/chromium`;
+        if (fs.existsSync(p)) { console.log('Found Chromium in nix store:', p); return p; }
+      }
+    }
+  } catch (e) { console.warn('Nix store search failed:', e.message); }
+
+  // 4. Try `which chromium` / `which chromium-browser`
+  for (const cmd of ['chromium', 'chromium-browser', 'google-chrome']) {
+    try {
+      const p = execSync(`which ${cmd} 2>/dev/null`).toString().trim();
+      if (p && fs.existsSync(p)) { console.log(`Found via which ${cmd}:`, p); return p; }
+    } catch (e) { /* not found */ }
+  }
+
+  console.error('❌ No Chromium found anywhere! Set CHROMIUM_PATH env var on Railway.');
   return undefined;
 }
 
@@ -50,8 +80,17 @@ async function createClient(accountId, io) {
 
   const chromiumPath = getChromiumPath();
 
+  if (!chromiumPath) {
+    const errMsg = 'Chromium not found on server. Set CHROMIUM_PATH env var in Railway dashboard.';
+    console.error(errMsg);
+    statuses[accountId] = 'error';
+    io.emit('wa:status', { accountId, status: 'error', error: errMsg });
+    return;
+  }
+
   const puppeteerConfig = {
     headless: true,
+    executablePath: chromiumPath,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -63,13 +102,11 @@ async function createClient(accountId, io) {
       '--disable-gpu',
       '--disable-extensions',
       '--disable-software-rasterizer',
+      '--disable-background-networking',
+      '--disable-default-apps',
+      '--disable-sync',
     ],
   };
-
-  // Use system chromium if found (required on Railway)
-  if (chromiumPath) {
-    puppeteerConfig.executablePath = chromiumPath;
-  }
 
   const client = new Client({
     authStrategy: new LocalAuth({
@@ -160,13 +197,14 @@ async function createClient(accountId, io) {
     delete clients[accountId];
   });
 
+  clients[accountId] = client;
+
   await client.initialize().catch(err => {
     console.error('Failed to init', accountId, ':', err.message);
     statuses[accountId] = 'error';
     io.emit('wa:status', { accountId, status: 'error', error: err.message });
+    delete clients[accountId];
   });
-
-  clients[accountId] = client;
 }
 
 async function addNewSession(accountId, io) {
@@ -228,7 +266,7 @@ async function getChatMessages(accountId, chatId, limit) {
 async function disconnectSession(accountId) {
   const client = clients[accountId];
   if (client) {
-    await client.destroy();
+    await client.destroy().catch(() => {});
     delete clients[accountId];
     delete statuses[accountId];
   }
@@ -243,6 +281,22 @@ function getSavedSessionIds() {
     .map(d => d.replace('session-', ''));
 }
 
+// Debug helper — call GET /api/whatsapp/debug to see what's happening on the server
+function getDebugInfo() {
+  const chromiumPath = getChromiumPath();
+  return {
+    chromiumFound: !!chromiumPath,
+    chromiumPath,
+    activeSessions: Object.keys(clients),
+    statuses,
+    env: {
+      CHROMIUM_PATH: process.env.CHROMIUM_PATH || null,
+      PUPPETEER_EXECUTABLE_PATH: process.env.PUPPETEER_EXECUTABLE_PATH || null,
+      NODE_ENV: process.env.NODE_ENV,
+    },
+  };
+}
+
 module.exports = {
   initWhatsApp,
   addNewSession,
@@ -252,4 +306,5 @@ module.exports = {
   getChatMessages,
   disconnectSession,
   getStatuses,
+  getDebugInfo,
 };

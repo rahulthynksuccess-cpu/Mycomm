@@ -7,8 +7,13 @@ const {
   disconnectSession,
   getStatuses,
   sendWAMessage,
+  getDebugInfo,
 } = require('../services/whatsapp');
 
+// GET /api/whatsapp/debug — server-side diagnosis
+router.get('/debug', (req, res) => {
+  res.json(getDebugInfo());
+});
 // GET /api/whatsapp/status — all session statuses
 router.get('/status', (req, res) => {
   res.json(getStatuses());
