@@ -24,9 +24,8 @@ RUN cd frontend && npm run build
 # Copy backend source
 COPY backend/ ./backend/
 
-# Persistent sessions volume
+# Sessions directory — persistence handled by Railway Volume in railway.toml
 RUN mkdir -p /app/backend/sessions
-VOLUME ["/app/backend/sessions"]
 
 EXPOSE 8080
 CMD ["node", "backend/server.js"]
