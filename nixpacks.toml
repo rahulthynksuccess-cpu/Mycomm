@@ -1,18 +1,14 @@
 [phases.setup]
-nixPkgs = [
-  "nodejs_20",
-  "chromium",
-  "nss",
-  "freetype",
-  "harfbuzz",
-  "fontconfig"
-]
+nixPkgs = ["nodejs_20"]
 
 [phases.install]
-cmds = ["npm install --prefix backend"]
+cmds = [
+  "cd frontend && npm install",
+  "cd backend && npm install"
+]
 
 [phases.build]
-cmds = []
+cmds = ["cd frontend && npm run build"]
 
 [start]
 cmd = "node backend/server.js"

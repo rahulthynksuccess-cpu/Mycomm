@@ -65,6 +65,14 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => console.log('Client disconnected:', socket.id));
 });
 
+// ── Serve React frontend ───────────────────────────────
+const path = require('path');
+const frontendBuild = path.join(__dirname, '../frontend/build');
+app.use(require('express').static(frontendBuild));
+app.get('*', (req, res) => {
+  res.sendFile(path.join(frontendBuild, 'index.html'));
+});
+
 // ── Start server ───────────────────────────────────────
 server.listen(PORT, '0.0.0.0', async () => {
   console.log('\n MyComms backend running on port', PORT);
