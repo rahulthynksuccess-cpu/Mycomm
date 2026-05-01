@@ -1,10 +1,6 @@
 /**
- * WhatsApp service — @whiskeysockets/baileys
- * Fixes:
- *  - Emit wa:qr with qr=null on connection open so frontend clears the modal
- *  - Fetch WA version once at startup, not per-account (avoids race + slowness)
- *  - Count only active (non-failed) sessions toward MAX_ACCOUNTS
- *  - Stagger multi-account init to avoid hitting WA rate limits
+ * WhatsApp service — @whiskeysockets/baileys v6.7.x
+ * No makeInMemoryStore (removed in 6.7+) — chats/messages managed manually.
  */
 
 const {
@@ -13,7 +9,6 @@ const {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
-  makeInMemoryStore,
   isJidGroup,
 } = require('@whiskeysockets/baileys');
 
@@ -25,8 +20,9 @@ const qrcode   = require('qrcode');
 
 // ── State ──────────────────────────────────────────────
 const clients  = {};   // accountId → socket
-const stores   = {};   // accountId → in-memory store
 const statuses = {};   // accountId → { status, phone, name, error, reason }
+const chatMap  = {};   // accountId → Map<chatId, chatObj>
+const msgMap   = {};   // accountId → Map<chatId, message[]>
 
 const MAX_ACCOUNTS = parseInt(process.env.WA_MAX_ACCOUNTS || '5');
 const SESSIONS_DIR = path.join(__dirname, '..', 'sessions');
@@ -35,13 +31,13 @@ if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true }
 
 const logger = pino({ level: 'silent' });
 
-// Cache WA version — fetched once at first use, reused for all accounts
+// WA version — fetched once, reused
 let _waVersion = null;
 async function getWAVersion() {
   if (!_waVersion) {
     const { version } = await fetchLatestBaileysVersion();
     _waVersion = version;
-    console.log('[WA] Using version:', version.join('.'));
+    console.log('[WA] Version:', version.join('.'));
   }
   return _waVersion;
 }
@@ -62,18 +58,23 @@ function phoneFromJid(jid = '') {
   return jid.split('@')[0].replace(/[^0-9]/g, '');
 }
 
-// Active accounts = those not in a terminal-failed state
-function activeAccountCount() {
-  return Object.keys(clients).length;
+function extractBody(msg) {
+  return msg?.message?.conversation
+    || msg?.message?.extendedTextMessage?.text
+    || msg?.message?.imageMessage?.caption
+    || msg?.message?.videoMessage?.caption
+    || '';
 }
 
-// ── Core: create a Baileys socket for one account ──────
+// ── Core ───────────────────────────────────────────────
 async function createClient(accountId, io) {
-  // Tear down any existing socket
   if (clients[accountId]) {
     try { clients[accountId].end(undefined); } catch (_) {}
     delete clients[accountId];
   }
+
+  chatMap[accountId] = new Map();
+  msgMap[accountId]  = new Map();
 
   emitStatus(io, accountId, {
     status: 'initializing', phone: undefined, name: undefined,
@@ -82,9 +83,6 @@ async function createClient(accountId, io) {
 
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir(accountId));
   const version              = await getWAVersion();
-
-  const store = makeInMemoryStore({ logger });
-  stores[accountId] = store;
 
   const sock = makeWASocket({
     version,
@@ -99,17 +97,14 @@ async function createClient(accountId, io) {
     markOnlineOnConnect: true,
     connectTimeoutMs: 60_000,
     keepAliveIntervalMs: 25_000,
-    retryRequestDelayMs: 250,
   });
 
   clients[accountId] = sock;
-  store.bind(sock.ev);
 
-  // ── Connection updates ─────────────────────────────────
+  // ── Connection updates ─────────────────────────────
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    // New QR available — send to frontend
     if (qr) {
       emitStatus(io, accountId, { status: 'qr' });
       const qrDataUrl = await qrcode.toDataURL(qr).catch(() => null);
@@ -119,19 +114,10 @@ async function createClient(accountId, io) {
     if (connection === 'open') {
       const phone = phoneFromJid(sock.user?.id || '');
       const name  = sock.user?.name || accountId;
-      console.log(`[WA] ${accountId} ready — ${phone} (${name})`);
-
-      // 1. Clear QR modal on frontend FIRST — send null qr signal
+      console.log(`[WA] ${accountId} ready — ${phone}`);
+      // Clear QR first, then set ready
       io.emit('wa:qr', { accountId, qr: null });
-
-      // 2. Then emit ready status
       emitStatus(io, accountId, { status: 'ready', phone, name });
-
-      // 3. Push initial chat list
-      try {
-        const chats = await getRecentChats(accountId);
-        io.emit('wa:chats', { accountId, chats });
-      } catch (_) {}
     }
 
     if (connection === 'close') {
@@ -145,15 +131,15 @@ async function createClient(accountId, io) {
 
       if (loggedOut || badSession) {
         fs.rmSync(sessionDir(accountId), { recursive: true, force: true });
-        delete stores[accountId];
+        delete chatMap[accountId];
+        delete msgMap[accountId];
         emitStatus(io, accountId, {
           status: 'auth_failure',
-          error: loggedOut ? 'Logged out from phone' : 'Bad session — please re-scan QR',
+          error: loggedOut ? 'Logged out from phone' : 'Bad session — re-scan QR',
         });
       } else {
         emitStatus(io, accountId, { status: 'disconnected', reason: String(statusCode) });
         const delay = statusCode === DisconnectReason.restartRequired ? 2000 : 8000;
-        console.log(`[WA] Auto-reconnect ${accountId} in ${delay}ms`);
         setTimeout(() => {
           if (!clients[accountId]) createClient(accountId, io).catch(console.error);
         }, delay);
@@ -163,46 +149,97 @@ async function createClient(accountId, io) {
 
   sock.ev.on('creds.update', saveCreds);
 
-  // ── Incoming messages ──────────────────────────────────
-  sock.ev.on('messages.upsert', async ({ messages: msgs, type }) => {
-    if (type !== 'notify') return;
-    for (const msg of msgs) {
-      if (msg.key.fromMe) continue;
-      const jid      = msg.key.remoteJid || '';
-      const body     = msg.message?.conversation
-        || msg.message?.extendedTextMessage?.text
-        || msg.message?.imageMessage?.caption
-        || '';
-      const contact  = store.contacts?.[jid];
-      const fromName = contact?.notify || contact?.name || phoneFromJid(jid);
-      io.emit('wa:message', {
-        accountId,
-        id:          msg.key.id,
-        chatId:      jid,
-        from:        fromName,
-        fromNumber:  jid,
-        body,
-        type:        Object.keys(msg.message || {})[0] || 'unknown',
-        timestamp:   Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
-        isGroup:     isJidGroup(jid),
-        chatName:    store.chats.get(jid)?.name || fromName,
-        hasMedia:    !!(msg.message?.imageMessage || msg.message?.videoMessage
-                      || msg.message?.audioMessage || msg.message?.documentMessage),
+  // ── Chats upsert — build local chat map ───────────
+  sock.ev.on('chats.upsert', (newChats) => {
+    for (const chat of newChats) {
+      chatMap[accountId].set(chat.id, {
+        ...chatMap[accountId].get(chat.id),
+        ...chat,
       });
     }
+    // Push updated list to all connected frontends
+    const list = buildChatList(accountId);
+    if (list.length > 0) io.emit('wa:chats', { accountId, chats: list });
   });
+
+  sock.ev.on('chats.update', (updates) => {
+    for (const update of updates) {
+      const existing = chatMap[accountId].get(update.id) || {};
+      chatMap[accountId].set(update.id, { ...existing, ...update });
+    }
+    const list = buildChatList(accountId);
+    if (list.length > 0) io.emit('wa:chats', { accountId, chats: list });
+  });
+
+  // ── Messages ───────────────────────────────────────
+  sock.ev.on('messages.upsert', ({ messages: msgs, type }) => {
+    for (const msg of msgs) {
+      const jid  = msg.key.remoteJid || '';
+      if (!jid) continue;
+
+      // Store message
+      if (!msgMap[accountId].has(jid)) msgMap[accountId].set(jid, []);
+      const arr = msgMap[accountId].get(jid);
+      arr.push(msg);
+      if (arr.length > 200) arr.splice(0, arr.length - 200); // keep last 200
+
+      // Update chat last message
+      const chat = chatMap[accountId].get(jid) || { id: jid };
+      chatMap[accountId].set(jid, {
+        ...chat,
+        conversationTimestamp: msg.messageTimestamp,
+        lastMessage: extractBody(msg),
+      });
+
+      // Notify frontend of new message (only for incoming notify-type)
+      if (type === 'notify' && !msg.key.fromMe) {
+        const body     = extractBody(msg);
+        const fromName = msg.pushName || phoneFromJid(jid);
+        io.emit('wa:message', {
+          accountId,
+          id:          msg.key.id,
+          chatId:      jid,
+          from:        fromName,
+          fromNumber:  jid,
+          body,
+          type:        Object.keys(msg.message || {})[0] || 'unknown',
+          timestamp:   Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
+          isGroup:     isJidGroup(jid),
+          chatName:    chatMap[accountId].get(jid)?.name || fromName,
+          hasMedia:    !!(msg.message?.imageMessage || msg.message?.videoMessage
+                        || msg.message?.audioMessage || msg.message?.documentMessage),
+        });
+
+        // Push refreshed chat list so unread count / last message updates
+        const list = buildChatList(accountId);
+        if (list.length > 0) io.emit('wa:chats', { accountId, chats: list });
+      }
+    }
+  });
+}
+
+function buildChatList(accountId, limit = 50) {
+  const map = chatMap[accountId];
+  if (!map) return [];
+  return [...map.values()]
+    .sort((a, b) => (Number(b.conversationTimestamp) || 0) - (Number(a.conversationTimestamp) || 0))
+    .slice(0, limit)
+    .map(chat => ({
+      id:              chat.id,
+      name:            chat.name || phoneFromJid(chat.id) || 'Unknown',
+      lastMessage:     chat.lastMessage || '',
+      lastMessageTime: Number(chat.conversationTimestamp) || 0,
+      unreadCount:     chat.unreadCount || 0,
+      isGroup:         isJidGroup(chat.id),
+    }));
 }
 
 // ── Public API ─────────────────────────────────────────
 
 async function initWhatsApp(io) {
-  // Pre-fetch WA version once before restoring sessions
   await getWAVersion().catch(e => console.error('[WA] Version fetch failed:', e.message));
-
   const saved = getSavedSessionIds();
   console.log('[WA] Restoring sessions:', saved);
-
-  // Stagger restores by 3s each to avoid rate limiting
   for (let i = 0; i < saved.length; i++) {
     if (i > 0) await new Promise(r => setTimeout(r, 3000));
     await createClient(saved[i], io).catch(e =>
@@ -212,7 +249,7 @@ async function initWhatsApp(io) {
 }
 
 async function addNewSession(accountId, io) {
-  if (activeAccountCount() >= MAX_ACCOUNTS)
+  if (Object.keys(clients).length >= MAX_ACCOUNTS)
     throw new Error(`Max ${MAX_ACCOUNTS} accounts reached.`);
   await createClient(accountId, io);
 }
@@ -222,7 +259,8 @@ async function disconnectSession(accountId) {
     try { clients[accountId].end(undefined); } catch (_) {}
     delete clients[accountId];
   }
-  delete stores[accountId];
+  delete chatMap[accountId];
+  delete msgMap[accountId];
   delete statuses[accountId];
   const dir = path.join(SESSIONS_DIR, `session-${accountId}`);
   if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
@@ -231,62 +269,20 @@ async function disconnectSession(accountId) {
 async function sendWAMessage(accountId, to, body) {
   const sock = clients[accountId];
   if (!sock || statuses[accountId]?.status !== 'ready')
-    throw new Error('Account not ready. Please wait for it to connect.');
+    throw new Error('Account not ready.');
   const jid = to.includes('@') ? to : `${to.replace(/\D/g, '')}@s.whatsapp.net`;
   await sock.sendMessage(jid, { text: body });
 }
 
 async function getRecentChats(accountId, limit = 50) {
-  const store = stores[accountId];
-  if (!store) return [];
-
-  // Baileys store exposes chats differently depending on version —
-  // handle all known shapes safely
-  let all = [];
-  try {
-    if (typeof store.chats.all === 'function') {
-      all = [...store.chats.all()];
-    } else if (store.chats.toJSON) {
-      all = Object.values(store.chats.toJSON());
-    } else if (store.chats.get) {
-      // Iterate underlying Map if exposed
-      all = [...(store.chats._map?.values() || [])];
-    }
-  } catch (e) {
-    console.error('[WA] getRecentChats store read error:', e.message);
-  }
-
-  // Sort by most recent message first
-  all.sort((a, b) => (Number(b.conversationTimestamp) || 0) - (Number(a.conversationTimestamp) || 0));
-
-  return all.slice(0, limit).map(chat => {
-    const lastMsgArray = chat.messages?.array;
-    const lastMsg = lastMsgArray?.[lastMsgArray.length - 1];
-    const lastBody = lastMsg?.message?.conversation
-      || lastMsg?.message?.extendedTextMessage?.text
-      || '';
-    return {
-      id:              chat.id,
-      name:            chat.name || phoneFromJid(chat.id) || 'Unknown',
-      lastMessage:     lastBody,
-      lastMessageTime: Number(chat.conversationTimestamp) || 0,
-      unreadCount:     chat.unreadCount || 0,
-      isGroup:         isJidGroup(chat.id),
-    };
-  });
+  return buildChatList(accountId, limit);
 }
 
 async function getChatMessages(accountId, chatId, limit = 50) {
-  const store = stores[accountId];
-  if (!store) throw new Error('Account not connected.');
-  const msgs = store.messages[chatId];
-  if (!msgs) return [];
-  return [...msgs.array].slice(-limit).map(m => ({
+  const msgs = msgMap[accountId]?.get(chatId) || [];
+  return msgs.slice(-limit).map(m => ({
     id:        m.key.id,
-    body:      m.message?.conversation
-               || m.message?.extendedTextMessage?.text
-               || m.message?.imageMessage?.caption
-               || '',
+    body:      extractBody(m),
     fromMe:    m.key.fromMe || false,
     type:      Object.keys(m.message || {})[0] || 'unknown',
     timestamp: Number(m.messageTimestamp) || 0,

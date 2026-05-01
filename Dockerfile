@@ -4,6 +4,7 @@ FROM node:20-bookworm-slim
 # Only need ca-certificates and fonts for QR generation
 RUN apt-get update && apt-get install -y \
   ca-certificates \
+  git \
   --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
