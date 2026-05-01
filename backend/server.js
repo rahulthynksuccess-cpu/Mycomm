@@ -1,22 +1,21 @@
 require('dotenv').config();
 const express = require('express');
-const http = require('http');
+const http    = require('http');
 const { Server } = require('socket.io');
-const cors = require('cors');
+const cors   = require('cors');
+const path   = require('path');
 
-const app = express();
+const app    = express();
 const server = http.createServer(app);
 
-// ── Health check first — before anything else ──────────
-// This must respond even if other services fail to load
-app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
+// Health check — must respond immediately, before any async work
+app.get('/health', (_req, res) => res.json({ status: 'ok', time: new Date() }));
 
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 const PORT = process.env.PORT || 4000;
 
 // ── Socket.io ──────────────────────────────────────────
 const io = new Server(server, {
-  cors: { origin: '*', methods: ['GET', 'POST'], credentials: true },
+  cors: { origin: '*', methods: ['GET', 'POST', 'DELETE', 'PATCH'] },
 });
 app.set('io', io);
 
@@ -25,65 +24,49 @@ app.use(cors({ origin: '*', credentials: true }));
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// ── Routes (wrapped so one failure doesn't kill server) ─
-try {
-  const authRoutes = require('./routes/auth');
-  app.use('/auth', authRoutes);
-  console.log('✓ Auth routes loaded');
-} catch (e) { console.error('✗ Auth routes failed:', e.message); }
+// ── Routes ─────────────────────────────────────────────
+const safeLoad = (label, fn) => {
+  try { fn(); console.log('✓', label); }
+  catch (e) { console.error('✗', label, e.message); }
+};
 
-try {
-  const emailRoutes = require('./routes/email');
-  app.use('/api/email', emailRoutes);
-  console.log('✓ Email routes loaded');
-} catch (e) { console.error('✗ Email routes failed:', e.message); }
+safeLoad('Auth routes',      () => app.use('/auth',          require('./routes/auth')));
+safeLoad('Email routes',     () => app.use('/api/email',     require('./routes/email')));
+safeLoad('Calendar routes',  () => app.use('/api/calendar',  require('./routes/calendar')));
+safeLoad('WhatsApp routes',  () => app.use('/api/whatsapp',  require('./routes/whatsapp')));
 
-try {
-  const calendarRoutes = require('./routes/calendar');
-  app.use('/api/calendar', calendarRoutes);
-  console.log('✓ Calendar routes loaded');
-} catch (e) { console.error('✗ Calendar routes failed:', e.message); }
-
-try {
-  const whatsappRoutes = require('./routes/whatsapp');
-  app.use('/api/whatsapp', whatsappRoutes);
-  console.log('✓ WhatsApp routes loaded');
-} catch (e) { console.error('✗ WhatsApp routes failed:', e.message); }
-
-// ── Socket.io events ───────────────────────────────────
+// ── Socket: replay current state on every new connection ──
 io.on('connection', (socket) => {
-  console.log('Client connected:', socket.id);
-  socket.on('wa:send', async ({ accountId, to, body }) => {
-    try {
-      const { sendWAMessage } = require('./services/whatsapp');
-      await sendWAMessage(accountId, to, body);
-      socket.emit('wa:sent', { success: true });
-    } catch (err) {
-      socket.emit('wa:error', { error: err.message });
-    }
-  });
-  socket.on('disconnect', () => console.log('Client disconnected:', socket.id));
+  console.log('[socket] connected:', socket.id);
+
+  // Immediately send all known WA statuses to this client.
+  // This is the KEY fix: any page refresh instantly gets current state
+  // without waiting for the next event.
+  try {
+    const { getStatuses } = require('./services/whatsapp');
+    const statuses = getStatuses();
+    Object.entries(statuses).forEach(([accountId, s]) => {
+      socket.emit('wa:status', { accountId, ...s });
+    });
+  } catch (_) {}
+
+  socket.on('disconnect', () => console.log('[socket] disconnected:', socket.id));
 });
 
-// ── Serve React frontend ───────────────────────────────
-const path = require('path');
+// ── Serve React build (same-origin deploy) ─────────────
 const frontendBuild = path.join(__dirname, '../frontend/build');
-app.use(require('express').static(frontendBuild));
-app.get('*', (req, res) => {
-  res.sendFile(path.join(frontendBuild, 'index.html'));
-});
+app.use(express.static(frontendBuild));
+app.get('*', (_req, res) => res.sendFile(path.join(frontendBuild, 'index.html')));
 
-// ── Start server ───────────────────────────────────────
+// ── Start ──────────────────────────────────────────────
 server.listen(PORT, '0.0.0.0', async () => {
-  console.log('\n MyComms backend running on port', PORT);
-
-  // Init WhatsApp after server is already up and healthy
+  console.log(`\n MyComms running on port ${PORT}\n`);
   try {
     const { initWhatsApp } = require('./services/whatsapp');
     await initWhatsApp(io);
-    console.log('WhatsApp service started');
+    console.log('[WA] Sessions restored');
   } catch (e) {
-    console.error('WhatsApp init failed (server still running):', e.message);
+    console.error('[WA] Init error (server still up):', e.message);
   }
 });
 

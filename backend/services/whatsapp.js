@@ -1,181 +1,182 @@
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const path = require('path');
 const fs = require('fs');
 
-const clients = {};
-const statuses = {};
+// ── State ──────────────────────────────────────────────
+const clients  = {};  // accountId → Client
+const statuses = {};  // accountId → { status, phone, name, error, reason }
 
 const MAX_ACCOUNTS = parseInt(process.env.WA_MAX_ACCOUNTS || '5');
 const SESSIONS_DIR = path.join(__dirname, '..', 'sessions');
 
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
-function getPuppeteerArgs() {
-  return [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-accelerated-2d-canvas',
-    '--no-first-run',
-    '--no-zygote',
-    '--single-process',
-    '--disable-gpu',
+function getPuppeteerOpts() {
+  const args = [
+    '--no-sandbox', '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas',
+    '--no-first-run', '--no-zygote', '--single-process', '--disable-gpu',
   ];
+  const opts = { args };
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    opts.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    console.log('[WA] Using browser at:', process.env.PUPPETEER_EXECUTABLE_PATH);
+  }
+  return opts;
+}
+
+// Central emit — always keeps statuses{} in sync with what we send
+function emitStatus(io, accountId, fields) {
+  statuses[accountId] = { ...(statuses[accountId] || {}), ...fields };
+  io.emit('wa:status', { accountId, ...statuses[accountId] });
 }
 
 async function createClient(accountId, io) {
   if (clients[accountId]) return;
 
-  statuses[accountId] = { status: 'initializing' };
-  io.emit('wa:status', { accountId, status: 'initializing' });
-
-  // PUPPETEER_EXECUTABLE_PATH set by Dockerfile to /usr/bin/chromium (apt-installed)
-  const puppeteerOpts = { args: getPuppeteerArgs() };
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-    puppeteerOpts.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-    console.log('Using Chromium at:', process.env.PUPPETEER_EXECUTABLE_PATH);
-  }
+  emitStatus(io, accountId, { status: 'initializing', phone: undefined, name: undefined, error: undefined });
 
   const client = new Client({
     authStrategy: new LocalAuth({ clientId: accountId, dataPath: SESSIONS_DIR }),
-    puppeteer: puppeteerOpts,
+    puppeteer: getPuppeteerOpts(),
     webVersionCache: {
       type: 'remote',
       remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
     },
   });
 
+  clients[accountId] = client;  // register immediately to block duplicate calls
+
   client.on('qr', async (qr) => {
-    console.log('QR generated for', accountId);
-    statuses[accountId] = { status: 'qr' };
-    const qrDataUrl = await qrcode.toDataURL(qr);
-    io.emit('wa:qr', { accountId, qr: qrDataUrl });
-    io.emit('wa:status', { accountId, status: 'qr' });
+    console.log('[WA] QR for', accountId);
+    emitStatus(io, accountId, { status: 'qr' });
+    const qrDataUrl = await qrcode.toDataURL(qr).catch(() => null);
+    if (qrDataUrl) io.emit('wa:qr', { accountId, qr: qrDataUrl });
   });
 
   client.on('authenticated', () => {
-    statuses[accountId] = { status: 'authenticated' };
-    io.emit('wa:status', { accountId, status: 'authenticated' });
+    emitStatus(io, accountId, { status: 'authenticated' });
   });
 
   client.on('auth_failure', (msg) => {
-    statuses[accountId] = { status: 'auth_failure', error: msg };
-    io.emit('wa:status', { accountId, status: 'auth_failure', error: msg });
+    console.error('[WA] Auth failure', accountId, msg);
+    delete clients[accountId];
+    emitStatus(io, accountId, { status: 'auth_failure', error: String(msg) });
   });
 
   client.on('ready', async () => {
-    console.log(accountId, 'ready!');
+    console.log('[WA] Ready:', accountId);
     const info = client.info;
-    statuses[accountId] = { status: 'ready', phone: info.wid.user, name: info.pushname };
-    io.emit('wa:status', { accountId, status: 'ready', phone: info.wid.user, name: info.pushname });
-    const chats = await getRecentChats(accountId);
-    io.emit('wa:chats', { accountId, chats });
-  });
-
-  client.on('message', async (msg) => {
-    const contact = await msg.getContact().catch(() => null);
-    const chat = await msg.getChat().catch(() => null);
-    const payload = {
-      accountId, id: msg.id._serialized, chatId: msg.from,
-      from: contact?.pushname || contact?.name || msg.from.replace(/@\w+\.us/, ''),
-      fromNumber: msg.from, body: msg.body, type: msg.type,
-      timestamp: msg.timestamp, isGroup: msg.from.includes('@g.us'),
-      chatName: chat?.name || null, hasMedia: msg.hasMedia,
-    };
-    io.emit('wa:message', payload);
-  });
-
-  client.on('disconnected', (reason) => {
-    console.log(accountId, 'disconnected:', reason);
-    statuses[accountId] = { status: 'disconnected', reason };
-    io.emit('wa:status', { accountId, status: 'disconnected', reason });
-    delete clients[accountId];
-    // Auto-reconnect after 5s if session folder still exists (unexpected disconnect)
-    const sessionFolder = path.join(SESSIONS_DIR, `session-${accountId}`);
-    if (fs.existsSync(sessionFolder)) {
-      console.log('Scheduling auto-reconnect for', accountId, 'in 5s...');
-      setTimeout(() => {
-        if (!clients[accountId]) {
-          console.log('Auto-reconnecting', accountId);
-          createClient(accountId, io).catch(err =>
-            console.error('Auto-reconnect failed for', accountId, err.message)
-          );
-        }
-      }, 5000);
+    emitStatus(io, accountId, {
+      status: 'ready',
+      phone: info?.wid?.user || '',
+      name:  info?.pushname  || accountId,
+    });
+    try {
+      const chats = await getRecentChats(accountId);
+      io.emit('wa:chats', { accountId, chats });
+    } catch (e) {
+      console.error('[WA] getChats failed for', accountId, e.message);
     }
   });
 
-  clients[accountId] = client;
+  client.on('message', async (msg) => {
+    try {
+      const contact = await msg.getContact().catch(() => null);
+      const chat    = await msg.getChat().catch(() => null);
+      io.emit('wa:message', {
+        accountId, id: msg.id._serialized, chatId: msg.from,
+        from: contact?.pushname || contact?.name || msg.from.replace(/@\w+\.us/, ''),
+        fromNumber: msg.from, body: msg.body, type: msg.type,
+        timestamp: msg.timestamp, isGroup: msg.from.includes('@g.us'),
+        chatName: chat?.name || null, hasMedia: msg.hasMedia,
+      });
+    } catch (_) {}
+  });
 
-  await client.initialize().catch(err => {
-    console.error('Init failed for', accountId, ':', err.message);
-    statuses[accountId] = { status: 'error', error: err.message };
-    io.emit('wa:status', { accountId, status: 'error', error: err.message });
+  client.on('disconnected', (reason) => {
+    console.log('[WA] Disconnected:', accountId, reason);
     delete clients[accountId];
+    emitStatus(io, accountId, { status: 'disconnected', reason: String(reason) });
+    // Auto-reconnect if session folder still exists (unexpected drop, not manual disconnect)
+    const sessionDir = path.join(SESSIONS_DIR, `session-${accountId}`);
+    if (fs.existsSync(sessionDir)) {
+      console.log('[WA] Auto-reconnect in 8s for', accountId);
+      setTimeout(() => {
+        if (!clients[accountId]) createClient(accountId, io).catch(console.error);
+      }, 8000);
+    }
+  });
+
+  await client.initialize().catch((err) => {
+    console.error('[WA] Init failed for', accountId, err.message);
+    delete clients[accountId];
+    emitStatus(io, accountId, { status: 'error', error: err.message });
   });
 }
 
 async function initWhatsApp(io) {
   const saved = getSavedSessionIds();
-  for (const id of saved) await createClient(id, io);
+  console.log('[WA] Restoring sessions:', saved);
+  for (const id of saved) {
+    await createClient(id, io).catch(e =>
+      console.error('[WA] Restore failed for', id, e.message)
+    );
+  }
 }
 
 async function addNewSession(accountId, io) {
   if (Object.keys(clients).length >= MAX_ACCOUNTS)
-    throw new Error('Maximum accounts reached.');
+    throw new Error(`Max ${MAX_ACCOUNTS} accounts reached.`);
   await createClient(accountId, io);
+}
+
+async function disconnectSession(accountId) {
+  if (clients[accountId]) {
+    try { await clients[accountId].destroy(); } catch (_) {}
+    delete clients[accountId];
+  }
+  delete statuses[accountId];
+  const sessionDir = path.join(SESSIONS_DIR, `session-${accountId}`);
+  if (fs.existsSync(sessionDir)) {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    console.log('[WA] Session folder deleted for', accountId);
+  }
 }
 
 async function sendWAMessage(accountId, to, body) {
   const client = clients[accountId];
-  if (!client) throw new Error('Account not found or not ready.');
-  // If already a full WA ID (has @), use as-is. Otherwise assume individual number.
+  if (!client || statuses[accountId]?.status !== 'ready')
+    throw new Error('Account not ready. Please wait for it to connect.');
   const chatId = to.includes('@') ? to : (to.replace(/\D/g, '') + '@c.us');
-  console.log('Sending to chatId:', chatId);
   return client.sendMessage(chatId, body);
 }
 
-async function getRecentChats(accountId, limit = 30) {
+async function getRecentChats(accountId, limit = 50) {
   const client = clients[accountId];
-  if (!client) return [];
-  const chats = await client.getChats();
-  return Promise.all(chats.slice(0, limit).map(async chat => ({
-    id: chat.id._serialized, name: chat.name,
-    lastMessage: chat.lastMessage?.body || '',
+  if (!client || statuses[accountId]?.status !== 'ready') return [];
+  const all = await client.getChats();
+  return Promise.all(all.slice(0, limit).map(async chat => ({
+    id:              chat.id._serialized,
+    name:            chat.name || chat.id.user || 'Unknown',
+    lastMessage:     chat.lastMessage?.body || '',
     lastMessageTime: chat.lastMessage?.timestamp || 0,
-    unreadCount: chat.unreadCount, isGroup: chat.isGroup,
+    unreadCount:     chat.unreadCount || 0,
+    isGroup:         chat.isGroup,
   })));
 }
 
 async function getChatMessages(accountId, chatId, limit = 50) {
   const client = clients[accountId];
-  if (!client) throw new Error('Account not ready.');
-  console.log('Fetching messages for chat:', chatId);
+  if (!client) throw new Error('Account not connected.');
   const chat = await client.getChatById(chatId);
-  const messages = await chat.fetchMessages({ limit });
-  return messages.map(m => ({
-    id: m.id._serialized,
-    body: m.body || '',
-    fromMe: m.fromMe,
-    type: m.type,
-    timestamp: m.timestamp,
-    author: m.author || null,
+  const msgs = await chat.fetchMessages({ limit });
+  return msgs.map(m => ({
+    id: m.id._serialized, body: m.body || '',
+    fromMe: m.fromMe, type: m.type,
+    timestamp: m.timestamp, author: m.author || null,
   }));
-}
-
-async function disconnectSession(accountId) {
-  if (clients[accountId]) {
-    await clients[accountId].destroy().catch(() => {});
-    delete clients[accountId];
-    delete statuses[accountId];
-  }
-  // Remove persisted session folder so it doesn't re-initialize on server restart
-  const sessionFolder = path.join(SESSIONS_DIR, `session-${accountId}`);
-  if (fs.existsSync(sessionFolder)) {
-    fs.rmSync(sessionFolder, { recursive: true, force: true });
-    console.log('Deleted session folder for', accountId);
-  }
 }
 
 function getStatuses() { return statuses; }
@@ -183,7 +184,8 @@ function getStatuses() { return statuses; }
 function getSavedSessionIds() {
   if (!fs.existsSync(SESSIONS_DIR)) return [];
   return fs.readdirSync(SESSIONS_DIR)
-    .filter(d => d.startsWith('session-'))
+    .filter(d => d.startsWith('session-') &&
+      fs.statSync(path.join(SESSIONS_DIR, d)).isDirectory())
     .map(d => d.replace('session-', ''));
 }
 
