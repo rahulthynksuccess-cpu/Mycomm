@@ -44,7 +44,7 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
     if (!activeAccount || statuses[activeAccount]?.status !== 'ready') {
       setActiveAccount(readyAccounts[0][0]);
     }
-  }, [statuses]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [statuses]);
 
   // ── Load chats when active account is ready ──────────
   useEffect(() => {
@@ -52,7 +52,7 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
     if (statuses[activeAccount]?.status === 'ready') {
       loadChats(activeAccount);
     }
-  }, [activeAccount, statuses[activeAccount]?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeAccount, statuses[activeAccount]?.status]);
 
   // ── Close QR modal when account becomes ready ────────
   useEffect(() => {
@@ -80,7 +80,7 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
         setChats(prev => ({ ...prev, [msg.accountId]: c }))
       ).catch(() => {});
     }
-  }, [realtimeMessages]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [realtimeMessages]);
 
   // ── Scroll to bottom on new messages ─────────────────
   useEffect(() => {
