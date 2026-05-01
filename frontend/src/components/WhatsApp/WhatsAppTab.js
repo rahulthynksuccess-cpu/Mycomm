@@ -74,8 +74,9 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
     setNewAccountId('');
     try {
       await waAPI.addSession(id);
-      setTimeout(() => setShowQR(id), 1500);
-    } catch (e) { alert(e.message); }
+      // Show QR modal immediately — it will display a spinner until the QR arrives via socket
+      setShowQR(id);
+    } catch (e) { alert('Network error — check that REACT_APP_API_URL is set correctly.\n' + e.message); }
   }
 
   const currentChats = activeAccount ? (chats[activeAccount] || []) : [];
@@ -253,13 +254,23 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
         </div>
       )}
 
-      {/* QR modal */}
-      {showQR && qrCodes[showQR] && (
+      {/* QR modal — shows spinner until QR arrives via socket */}
+      {showQR && (
         <div className="qr-overlay" onClick={() => setShowQR(null)}>
           <div className="qr-card" onClick={e => e.stopPropagation()}>
             <h3>Scan with WhatsApp</h3>
             <p>WhatsApp → Linked Devices → Link a Device</p>
-            <img src={qrCodes[showQR]} alt="QR Code" />
+            {qrCodes[showQR] ? (
+              <img src={qrCodes[showQR]} alt="QR Code" />
+            ) : (
+              <div style={{ width: 256, height: 256, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, background: 'var(--bg2)', borderRadius: 8 }}>
+                <div style={{ fontSize: 32 }}>⏳</div>
+                <div style={{ fontSize: 13, color: 'var(--text3)', textAlign: 'center' }}>
+                  Generating QR code…<br />
+                  <span style={{ fontSize: 11 }}>This may take 20–40 seconds</span>
+                </div>
+              </div>
+            )}
             <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text3)' }}>Account: <strong>{showQR}</strong></div>
             <button className="btn" style={{ marginTop: 14, width: '100%' }} onClick={() => setShowQR(null)}>Close</button>
           </div>
