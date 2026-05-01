@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { waAPI } from '../../api';
 
-export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, realtimeMessages }) {
+export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, realtimeMessages, pushedChats = {}, setPushedChats }) {
   const [chats,         setChats]         = useState({});  // accountId → chat[]
   const [activeAccount, setActiveAccount] = useState(null);
   const [activeChat,    setActiveChat]    = useState(null);
@@ -15,8 +15,14 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
 
   const messagesEndRef = useRef(null);
   const qrTimerRef     = useRef(null);
-  // Track which accounts we've already loaded chats for to avoid duplicate fetches
-  const loadedChats    = useRef(new Set());
+
+  // ── Merge server-pushed chats (from wa:chats socket event via App.js) ──
+  useEffect(() => {
+    if (!pushedChats || !Object.keys(pushedChats).length) return;
+    setChats(prev => ({ ...prev, ...pushedChats }));
+    // Clear pushed chats from parent after merging
+    if (setPushedChats) setPushedChats({});
+  }, [pushedChats]);
 
   // ── Derived ──────────────────────────────────────────
   const readyAccounts  = Object.entries(statuses).filter(([, s]) => s.status === 'ready');
@@ -27,15 +33,16 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
 
   // ── Load chats for an account ────────────────────────
   const loadChats = useCallback(async (accountId) => {
-    if (!accountId || statuses[accountId]?.status !== 'ready') return;
+    if (!accountId) return;
     try {
       const c = await waAPI.getChats(accountId);
-      setChats(prev => ({ ...prev, [accountId]: c }));
-      loadedChats.current.add(accountId);
+      if (Array.isArray(c) && c.length > 0) {
+        setChats(prev => ({ ...prev, [accountId]: c }));
+      }
     } catch (e) {
       console.error('[WA] loadChats failed', accountId, e);
     }
-  }, [statuses]);
+  }, []);
 
   // ── Auto-select first ready account ──────────────────
   useEffect(() => {
@@ -44,24 +51,40 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
     if (!activeAccount || statuses[activeAccount]?.status !== 'ready') {
       setActiveAccount(readyAccounts[0][0]);
     }
-  }, [statuses]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [statuses]);
 
-  // ── Load chats when active account is ready ──────────
+  // ── Load chats whenever active account changes ───────
+  // Depends only on activeAccount so switching always triggers a fresh load.
+  // Also re-fires when status flips to 'ready' for the first time.
+  useEffect(() => {
+    if (!activeAccount) return;
+    // Load immediately if already ready, else wait for ready status below
+    if (statuses[activeAccount]?.status === 'ready') {
+      loadChats(activeAccount);
+    }
+  }, [activeAccount]); // intentionally only activeAccount — avoids stale-value trap
+
+  // Separate effect: fires when an account first becomes ready (e.g. after QR scan)
   useEffect(() => {
     if (!activeAccount) return;
     if (statuses[activeAccount]?.status === 'ready') {
       loadChats(activeAccount);
     }
-  }, [activeAccount, statuses[activeAccount]?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [statuses[activeAccount]?.status]);
 
-  // ── Close QR modal when account becomes ready ────────
+  // ── Close QR modal when account becomes ready OR qr cleared ──
   useEffect(() => {
-    if (showQR && statuses[showQR]?.status === 'ready') {
+    if (!showQR) return;
+    const isReady   = statuses[showQR]?.status === 'ready';
+    const qrCleared = !qrCodes[showQR] && statuses[showQR]
+                      && statuses[showQR]?.status !== 'qr'
+                      && statuses[showQR]?.status !== 'initializing';
+    if (isReady || qrCleared) {
       clearTimeout(qrTimerRef.current);
       setShowQR(null);
       setQrTimeout(false);
     }
-  }, [statuses, showQR]);
+  }, [statuses, showQR, qrCodes]);
 
   // ── Handle incoming real-time messages ───────────────
   useEffect(() => {
@@ -80,7 +103,7 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
         setChats(prev => ({ ...prev, [msg.accountId]: c }))
       ).catch(() => {});
     }
-  }, [realtimeMessages]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [realtimeMessages]);
 
   // ── Scroll to bottom on new messages ─────────────────
   useEffect(() => {

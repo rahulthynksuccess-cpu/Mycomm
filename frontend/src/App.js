@@ -16,6 +16,7 @@ export default function App() {
   const [waStatuses,   setWaStatuses]   = useState({});
   const [waMessages,   setWaMessages]   = useState([]);
   const [waQRs,        setWaQRs]        = useState({});
+  const [waChats,      setWaChats]      = useState({});  // accountId → chat[]
   const socketRef = useRef(null);
 
   const addNotification = useCallback((type, text) => {
@@ -66,7 +67,19 @@ export default function App() {
     });
 
     socket.on('wa:qr', ({ accountId, qr }) => {
-      setWaQRs(prev => ({ ...prev, [accountId]: qr }));
+      if (!qr) {
+        // null qr = account connected, clear QR
+        setWaQRs(prev => { const n = { ...prev }; delete n[accountId]; return n; });
+      } else {
+        setWaQRs(prev => ({ ...prev, [accountId]: qr }));
+      }
+    });
+
+    // Backend pushes chats when an account becomes ready
+    socket.on('wa:chats', ({ accountId, chats }) => {
+      if (Array.isArray(chats) && chats.length > 0) {
+        setWaChats(prev => ({ ...prev, [accountId]: chats }));
+      }
     });
 
     socket.on('wa:message', (msg) => {
@@ -75,7 +88,7 @@ export default function App() {
 
     // Cleanup
     return () => socket.disconnect();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   const tabs = [
     { id: 'whatsapp', label: 'WhatsApp', icon: '💬' },
@@ -134,6 +147,8 @@ export default function App() {
             setWaStatuses={setWaStatuses}
             qrCodes={waQRs}
             realtimeMessages={waMessages}
+            pushedChats={waChats}
+            setPushedChats={setWaChats}
           />
         )}
         {activeTab === 'email'    && <EmailTab />}
