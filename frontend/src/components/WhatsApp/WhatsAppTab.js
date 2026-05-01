@@ -44,7 +44,51 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
     }
   }, [realtimeMessages]);
 
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // Called when user clicks "Initialize →" in the Add Account modal
+  function handleInitialize() {
+    const accountId = newAccountId.trim() || `wa${Date.now()}`;
+    setAddingSession(false);
+    setNewAccountId('');
+    startSession(accountId);
+  }
+
+  // Called when user clicks "Retry" or "Restart session" in the QR modal
+  function handleRetry() {
+    if (!showQR) return;
+    startSession(showQR);
+  }
+
+  // Core: disconnect any existing session for this ID, then create fresh one
+  async function startSession(accountId) {
+    setQrTimeout(false);
+    clearTimeout(qrTimerRef.current);
+
+    try {
+      // Clean up any stuck session first
+      if (statuses[accountId]) {
+        await waAPI.removeSession(accountId).catch(() => {});
+        setWaStatuses(prev => {
+          const next = { ...prev };
+          delete next[accountId];
+          return next;
+        });
+        // Small delay so backend fully cleans up
+        await new Promise(r => setTimeout(r, 800));
+      }
+
+      await waAPI.addSession(accountId);
+      setShowQR(accountId);
+
+      // 90s timeout — if no QR by then, show error state
+      qrTimerRef.current = setTimeout(() => setQrTimeout(true), 90000);
+    } catch (e) {
+      alert('Failed to start session: ' + e.message);
+    }
+  }
 
   async function openChat(chat) {
     setActiveChat(chat);
@@ -70,27 +114,16 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
     } catch (e) { alert('Failed to send: ' + e.message); }
   }
 
-  async function addSession(id) {
-    const accountId = id || (newAccountId.trim() || `wa${Date.now()}`);
-    setAddingSession(false);
-    setNewAccountId('');
+  function closeQR() {
+    setShowQR(null);
     setQrTimeout(false);
-    try {
-      // Remove old session if retrying
-      if (statuses[accountId]) {
-        await waAPI.removeSession(accountId).catch(() => {});
-        setWaStatuses(prev => { const n = { ...prev }; delete n[accountId]; return n; });
-      }
-      await waAPI.addSession(accountId);
-      setShowQR(accountId);
-      // Start 90s timeout — Chromium on Railway can be slow
-      clearTimeout(qrTimerRef.current);
-      qrTimerRef.current = setTimeout(() => setQrTimeout(true), 90000);
-    } catch (e) { alert('Network error — check that REACT_APP_API_URL is set correctly.\n' + e.message); }
+    clearTimeout(qrTimerRef.current);
   }
 
   const currentChats = activeAccount ? (chats[activeAccount] || []) : [];
   const activeStatus = activeAccount ? statuses[activeAccount] : null;
+  const showQRStatus = showQR ? statuses[showQR] : null;
+  const hasError = showQRStatus?.status === 'error' || qrTimeout;
 
   return (
     <div className="tab-layout">
@@ -100,12 +133,16 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
       </div>
 
       <div className="tab-body">
-        {/* Left panel: accounts + chats */}
+        {/* Left panel */}
         <div className="panel-left">
           <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)' }}>
-            <div className="section-label" style={{ padding: '0 0 6px' }}>Accounts ({Object.keys(statuses).length}/5)</div>
+            <div className="section-label" style={{ padding: '0 0 6px' }}>
+              Accounts ({Object.keys(statuses).length}/5)
+            </div>
             {Object.keys(statuses).length === 0 && (
-              <div style={{ color: 'var(--text3)', fontSize: 12, padding: '4px 0' }}>No accounts yet. Add one above.</div>
+              <div style={{ color: 'var(--text3)', fontSize: 12, padding: '4px 0' }}>
+                No accounts yet. Add one above.
+              </div>
             )}
             {Object.entries(statuses).map(([id, s]) => (
               <button
@@ -143,10 +180,15 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
               <div className="empty-state" style={{ padding: 20, minHeight: 'unset' }}>
                 <div className="empty-icon" style={{ fontSize: 32 }}>📱</div>
                 <div className="empty-sub">
-                  {activeStatus.status === 'qr' ? 'Scan QR to connect.' : activeStatus.status === 'initializing' ? 'Initializing…' : 'Disconnected.'}
+                  {activeStatus.status === 'qr' ? 'Scan QR to connect.'
+                    : activeStatus.status === 'initializing' ? 'Initializing…'
+                    : activeStatus.status === 'error' ? '❌ ' + (activeStatus.error || 'Error')
+                    : 'Disconnected.'}
                 </div>
                 {activeStatus.status === 'qr' && (
-                  <button className="btn btn-primary btn-sm" onClick={() => setShowQR(activeAccount)}>Show QR Code</button>
+                  <button className="btn btn-primary btn-sm" onClick={() => setShowQR(activeAccount)}>
+                    Show QR Code
+                  </button>
                 )}
               </div>
             )}
@@ -181,7 +223,7 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
           </div>
         </div>
 
-        {/* Right panel: messages */}
+        {/* Right panel */}
         <div className="panel-right">
           {!activeChat ? (
             <div className="empty-state">
@@ -242,62 +284,72 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
         </div>
       </div>
 
-      {/* Add session modal */}
+      {/* Add Account modal */}
       {addingSession && (
         <div className="modal-overlay" onClick={() => setAddingSession(false)}>
           <div className="modal" style={{ width: 400 }} onClick={e => e.stopPropagation()}>
-            <div className="modal-header">Add WhatsApp Account <button className="modal-close" onClick={() => setAddingSession(false)}>×</button></div>
+            <div className="modal-header">
+              Add WhatsApp Account
+              <button className="modal-close" onClick={() => setAddingSession(false)}>×</button>
+            </div>
             <div className="modal-body">
               <p style={{ color: 'var(--text2)', fontSize: 13, lineHeight: 1.6 }}>
                 A QR code will appear. Open WhatsApp → Linked Devices → Link a Device → scan the QR.
               </p>
               <div className="field">
                 <label>Account label (optional)</label>
-                <input className="input" placeholder="e.g. personal, work, business1" value={newAccountId} onChange={e => setNewAccountId(e.target.value)} />
+                <input
+                  className="input"
+                  placeholder="e.g. personal, work, business1"
+                  value={newAccountId}
+                  onChange={e => setNewAccountId(e.target.value)}
+                />
               </div>
             </div>
             <div className="modal-footer">
               <button className="btn" onClick={() => setAddingSession(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={addSession}>Initialize →</button>
+              <button className="btn btn-primary" onClick={handleInitialize}>Initialize →</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* QR modal — shows spinner, error, or QR */}
+      {/* QR modal */}
       {showQR && (
-        <div className="qr-overlay" onClick={() => setShowQR(null)}>
+        <div className="qr-overlay" onClick={closeQR}>
           <div className="qr-card" onClick={e => e.stopPropagation()}>
             <h3>Scan with WhatsApp</h3>
             <p>WhatsApp → Linked Devices → Link a Device</p>
 
             {qrCodes[showQR] ? (
               <img src={qrCodes[showQR]} alt="QR Code" />
-            ) : (statuses[showQR]?.status === 'error' || qrTimeout) ? (
-              <div style={{ width: 256, height: 256, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, background: 'var(--bg2)', borderRadius: 8, padding: 16 }}>
+            ) : hasError ? (
+              <div style={{ width: 256, height: 256, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, background: 'var(--bg2)', borderRadius: 8, padding: 16 }}>
                 <div style={{ fontSize: 32 }}>⚠️</div>
                 <div style={{ fontSize: 12, color: '#e05c5c', textAlign: 'center', wordBreak: 'break-word' }}>
-                  {statuses[showQR]?.error || 'QR timed out — Chromium may not be installed on the server.'}
+                  {showQRStatus?.error || 'QR timed out. The server browser may have failed to start.'}
                 </div>
-                <button className="btn btn-primary" onClick={() => addSession(showQR)} style={{ marginTop: 4, width: '100%' }}>
+                <button className="btn btn-primary" style={{ marginTop: 8, width: '100%' }} onClick={handleRetry}>
                   🔄 Retry
                 </button>
               </div>
             ) : (
               <div style={{ width: 256, height: 256, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, background: 'var(--bg2)', borderRadius: 8 }}>
-                <div style={{ fontSize: 32 }}>⏳</div>
+                <div style={{ fontSize: 40 }}>⏳</div>
                 <div style={{ fontSize: 13, color: 'var(--text3)', textAlign: 'center' }}>
-                  {statuses[showQR]?.status === 'initializing' ? 'Starting browser…' : 'Generating QR code…'}<br />
-                  <span style={{ fontSize: 11 }}>This may take 20–60 seconds on first launch</span>
+                  {showQRStatus?.status === 'initializing' ? 'Starting browser…' : 'Generating QR code…'}<br />
+                  <span style={{ fontSize: 11 }}>May take up to 60s on first launch</span>
                 </div>
-                <button className="btn" onClick={() => addSession(showQR)} style={{ marginTop: 4, fontSize: 11, padding: '4px 10px' }}>
-                  🔄 Restart session
+                <button className="btn" style={{ marginTop: 4, fontSize: 12 }} onClick={handleRetry}>
+                  🔄 Restart
                 </button>
               </div>
             )}
 
-            <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text3)' }}>Account: <strong>{showQR}</strong></div>
-            <button className="btn" style={{ marginTop: 14, width: '100%' }} onClick={() => setShowQR(null)}>Close</button>
+            <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text3)' }}>
+              Account: <strong>{showQR}</strong>
+            </div>
+            <button className="btn" style={{ marginTop: 14, width: '100%' }} onClick={closeQR}>Close</button>
           </div>
         </div>
       )}
@@ -307,8 +359,9 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
 
 const initials = (n = '') => n.split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
 const strColor = (s = '') => {
-  const colors = ['#5b4fcf','#2d6a4f','#7b2d8b','#1a5276','#784212','#6d4c41','#37474f','#1b6ca8'];
-  let h = 0; for (let c of s) h = c.charCodeAt(0) + ((h << 5) - h);
+  const colors = ['#5b4fcf', '#2d6a4f', '#7b2d8b', '#1a5276', '#784212', '#6d4c41', '#37474f', '#1b6ca8'];
+  let h = 0;
+  for (let c of s) h = c.charCodeAt(0) + ((h << 5) - h);
   return colors[Math.abs(h) % colors.length];
 };
 const fmtTime = ts => {

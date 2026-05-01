@@ -31,8 +31,6 @@ export default function App() {
 
     socket.on('wa:qr', ({ accountId, qr }) => {
       setWaQRs(prev => ({ ...prev, [accountId]: qr }));
-      clearTimeout(qrTimerRef.current);
-      setQrTimeout(false);
     });
 
     socket.on('wa:ready', ({ accountId }) => {
