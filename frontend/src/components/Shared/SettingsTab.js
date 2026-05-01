@@ -1,13 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { waAPI, emailAPI } from '../../api';
 
-export default function SettingsTab({ socket }) {
-  const [waStatuses, setWaStatuses] = useState({});
+// Bug 2 fix: accept waStatuses + setWaStatuses from App.js (global state)
+// so disconnect here actually updates the whole app, not just a stale local copy.
+export default function SettingsTab({ socket, waStatuses, setWaStatuses }) {
   const [emailAccounts, setEmailAccounts] = useState([]);
   const [activeSection, setActiveSection] = useState('whatsapp');
 
   useEffect(() => {
-    waAPI.getStatus().then(setWaStatuses).catch(() => {});
     emailAPI.getAccounts().then(setEmailAccounts).catch(() => {});
   }, []);
 

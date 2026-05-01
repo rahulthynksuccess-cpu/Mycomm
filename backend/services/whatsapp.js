@@ -116,7 +116,9 @@ async function addNewSession(accountId, io) {
 async function sendWAMessage(accountId, to, body) {
   const client = clients[accountId];
   if (!client) throw new Error('Account not found or not ready.');
-  const chatId = to.includes('@') ? to : to.replace(/\D/g, '') + '@c.us';
+  // If already a full WA ID (has @), use as-is. Otherwise assume individual number.
+  const chatId = to.includes('@') ? to : (to.replace(/\D/g, '') + '@c.us');
+  console.log('Sending to chatId:', chatId);
   return client.sendMessage(chatId, body);
 }
 
@@ -135,11 +137,16 @@ async function getRecentChats(accountId, limit = 30) {
 async function getChatMessages(accountId, chatId, limit = 50) {
   const client = clients[accountId];
   if (!client) throw new Error('Account not ready.');
+  console.log('Fetching messages for chat:', chatId);
   const chat = await client.getChatById(chatId);
   const messages = await chat.fetchMessages({ limit });
   return messages.map(m => ({
-    id: m.id._serialized, body: m.body, fromMe: m.fromMe,
-    type: m.type, timestamp: m.timestamp, author: m.author || null,
+    id: m.id._serialized,
+    body: m.body || '',
+    fromMe: m.fromMe,
+    type: m.type,
+    timestamp: m.timestamp,
+    author: m.author || null,
   }));
 }
 
@@ -148,6 +155,12 @@ async function disconnectSession(accountId) {
     await clients[accountId].destroy().catch(() => {});
     delete clients[accountId];
     delete statuses[accountId];
+  }
+  // Remove persisted session folder so it doesn't re-initialize on server restart
+  const sessionFolder = path.join(SESSIONS_DIR, `session-${accountId}`);
+  if (fs.existsSync(sessionFolder)) {
+    fs.rmSync(sessionFolder, { recursive: true, force: true });
+    console.log('Deleted session folder for', accountId);
   }
 }
 

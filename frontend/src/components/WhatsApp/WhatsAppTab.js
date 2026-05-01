@@ -175,27 +175,29 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
           </div>
 
           <div className="section-label">Chats</div>
-          <div className="panel-scroll">
-            {activeStatus && activeStatus.status !== 'ready' && (
-              <div className="empty-state" style={{ padding: 20, minHeight: 'unset' }}>
-                <div className="empty-icon" style={{ fontSize: 32 }}>📱</div>
-                <div className="empty-sub">
-                  {activeStatus.status === 'qr' ? 'Scan QR to connect.'
-                    : activeStatus.status === 'initializing' ? 'Initializing…'
-                    : activeStatus.status === 'error' ? '❌ ' + (activeStatus.error || 'Error')
-                    : 'Disconnected.'}
-                </div>
-                {activeStatus.status === 'qr' && (
-                  <button className="btn btn-primary btn-sm" onClick={() => setShowQR(activeAccount)}>
-                    Show QR Code
-                  </button>
-                )}
+          {/* Bug 4 fix: not-ready state outside panel-scroll so it doesn't consume scroll space */}
+          {activeStatus && activeStatus.status !== 'ready' && (
+            <div className="empty-state" style={{ padding: 20, minHeight: 'unset' }}>
+              <div className="empty-icon" style={{ fontSize: 32 }}>📱</div>
+              <div className="empty-sub">
+                {activeStatus.status === 'qr' ? 'Scan QR to connect.'
+                  : activeStatus.status === 'initializing' ? 'Initializing…'
+                  : activeStatus.status === 'error' ? '❌ ' + (activeStatus.error || 'Error')
+                  : 'Disconnected.'}
               </div>
-            )}
+              {activeStatus.status === 'qr' && (
+                <button className="btn btn-primary btn-sm" onClick={() => setShowQR(activeAccount)}>
+                  Show QR Code
+                </button>
+              )}
+            </div>
+          )}
+          <div className="panel-scroll">
             {currentChats.map(chat => (
               <div
                 key={chat.id}
                 className={`list-item ${activeChat?.id === chat.id ? 'active' : ''}`}
+                style={{ position: 'relative' }}
                 onClick={() => openChat(chat)}
               >
                 <div className="avatar" style={{ background: strColor(chat.name), flexShrink: 0 }}>
@@ -245,7 +247,16 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
 
               <div className="panel-scroll" style={{ background: 'var(--bg)' }}>
                 <div className="bubble-wrap">
-                  {loading && <div style={{ color: 'var(--text3)', textAlign: 'center', fontSize: 13 }}>Loading messages…</div>}
+                  {loading && (
+                    <div style={{ color: 'var(--text3)', textAlign: 'center', fontSize: 13, padding: 20 }}>
+                      Loading messages…
+                    </div>
+                  )}
+                  {!loading && messages.length === 0 && (
+                    <div style={{ color: 'var(--text3)', textAlign: 'center', fontSize: 13, padding: 40 }}>
+                      No messages to show
+                    </div>
+                  )}
                   {messages.map((m, i) => (
                     <div key={m.id || i} className={`bubble-row ${m.fromMe ? 'me' : ''}`}>
                       {!m.fromMe && (

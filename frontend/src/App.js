@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
+import { waAPI } from './api';
 import WhatsAppTab from './components/WhatsApp/WhatsAppTab';
 import EmailTab from './components/Email/EmailTab';
 import CalendarTab from './components/Calendar/CalendarTab';
@@ -19,6 +20,11 @@ export default function App() {
   const socketRef = useRef(null);
 
   useEffect(() => {
+    // Bug 3 fix: load existing session statuses on mount (persists across refresh)
+    waAPI.getStatus().then(data => {
+      setWaStatuses(data);
+    }).catch(() => {});
+
     const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] });
     socketRef.current = socket;
 
@@ -27,16 +33,18 @@ export default function App() {
     // WhatsApp real-time events
     socket.on('wa:status', ({ accountId, status, phone, name, error }) => {
       setWaStatuses(prev => ({ ...prev, [accountId]: { status, phone, name, error } }));
+      // Bug 1 fix: clear QR image when session becomes ready (backend emits wa:status not wa:ready)
+      if (status === 'ready') {
+        setWaQRs(prev => { const n = { ...prev }; delete n[accountId]; return n; });
+        addNotification('success', `WhatsApp ${accountId} connected ✓`);
+      }
     });
 
     socket.on('wa:qr', ({ accountId, qr }) => {
       setWaQRs(prev => ({ ...prev, [accountId]: qr }));
     });
 
-    socket.on('wa:ready', ({ accountId }) => {
-      setWaQRs(prev => { const n = { ...prev }; delete n[accountId]; return n; });
-      addNotification('success', `WhatsApp ${accountId} connected ✓`);
-    });
+    // wa:ready is never emitted by backend — handled above in wa:status instead
 
     socket.on('wa:message', (msg) => {
       setWaMessages(prev => [msg, ...prev.slice(0, 499)]);
@@ -119,7 +127,7 @@ export default function App() {
         )}
         {activeTab === 'email' && <EmailTab />}
         {activeTab === 'calendar' && <CalendarTab />}
-        {activeTab === 'settings' && <SettingsTab socket={socketRef.current} />}
+        {activeTab === 'settings' && <SettingsTab socket={socketRef.current} waStatuses={waStatuses} setWaStatuses={setWaStatuses} />}
       </main>
 
       {/* Notification toasts */}

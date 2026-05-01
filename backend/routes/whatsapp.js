@@ -57,9 +57,11 @@ router.post('/:accountId/send', async (req, res) => {
   try {
     const { to, body } = req.body;
     if (!to || !body) return res.status(400).json({ error: 'to and body required.' });
+    console.log('Send request — accountId:', req.params.accountId, 'to:', to);
     await sendWAMessage(req.params.accountId, to, body);
     res.json({ success: true });
   } catch (err) {
+    console.error('Send error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

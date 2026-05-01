@@ -176,7 +176,7 @@ textarea.input { resize: vertical; min-height: 80px; }
   padding: 9px 13px; border-radius: 14px;
   font-size: 13.5px; line-height: 1.5; max-width: 100%;
 }
-.bubble.them { background: var(--bg3); border: 1px solid var(--border); border-radius: 4px 14px 14px 14px; }
+.bubble.them { background: var(--bg3); border: 1px solid var(--border); border-radius: 4px 14px 14px 14px; color: var(--text); }
 .bubble.me   { background: var(--accent); border-radius: 14px 4px 14px 14px; color: #fff; }
 .bubble-time { font-size: 11px; color: var(--text3); margin-top: 4px; }
 .bubble-row.me .bubble-time { text-align: right; }
