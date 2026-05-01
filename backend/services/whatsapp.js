@@ -30,10 +30,16 @@ async function createClient(accountId, io) {
   statuses[accountId] = 'initializing';
   io.emit('wa:status', { accountId, status: 'initializing' });
 
-  // Use puppeteer (full, with bundled Chrome) — no executablePath needed
+  // PUPPETEER_EXECUTABLE_PATH set by Dockerfile to /usr/bin/chromium (apt-installed)
+  const puppeteerOpts = { args: getPuppeteerArgs() };
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    puppeteerOpts.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    console.log('Using Chromium at:', process.env.PUPPETEER_EXECUTABLE_PATH);
+  }
+
   const client = new Client({
     authStrategy: new LocalAuth({ clientId: accountId, dataPath: SESSIONS_DIR }),
-    puppeteer: { args: getPuppeteerArgs() },
+    puppeteer: puppeteerOpts,
     webVersionCache: {
       type: 'remote',
       remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
