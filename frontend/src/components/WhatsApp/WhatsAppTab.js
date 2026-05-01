@@ -116,8 +116,10 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
     clearTimeout(qrTimerRef.current);
 
     try {
-      // Clean up any existing stuck session
-      if (statuses[accountId]) {
+      // Only clean up if the session is stuck or failed — never wipe a healthy account
+      const existingStatus = statuses[accountId]?.status;
+      const isStuck = existingStatus && !['ready', 'initializing', 'authenticated'].includes(existingStatus);
+      if (isStuck) {
         await waAPI.removeSession(accountId).catch(() => {});
         setWaStatuses(prev => { const n = { ...prev }; delete n[accountId]; return n; });
         await new Promise(r => setTimeout(r, 1000));
