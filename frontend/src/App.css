@@ -3,22 +3,22 @@
 
 /* ── Variables ── */
 :root {
-  --bg:       #0d0d14;
-  --bg2:      #13131c;
-  --bg3:      #1a1a26;
-  --bg4:      #21212f;
-  --border:   rgba(255,255,255,0.07);
-  --border2:  rgba(255,255,255,0.13);
-  --text:     #eeeef5;
-  --text2:    #8888aa;
-  --text3:    #4a4a66;
+  --bg:       #f5f6fa;
+  --bg2:      #ffffff;
+  --bg3:      #eef0f5;
+  --bg4:      #e4e7ef;
+  --border:   rgba(0,0,0,0.08);
+  --border2:  rgba(0,0,0,0.13);
+  --text:     #1a1a2e;
+  --text2:    #5a5a7a;
+  --text3:    #9999b5;
   --accent:   #7c5cfc;
   --accent2:  #5b3fd4;
-  --accent-t: rgba(124,92,252,0.15);
-  --green:    #3ecf8e;
-  --red:      #f87171;
-  --amber:    #fbbf24;
-  --blue:     #60a5fa;
+  --accent-t: rgba(124,92,252,0.1);
+  --green:    #16a34a;
+  --red:      #dc2626;
+  --amber:    #d97706;
+  --blue:     #2563eb;
   --wa-green: #25d366;
   --sidebar-w: 210px;
   --radius:   10px;
@@ -41,6 +41,7 @@ body {
 .sidebar {
   width: var(--sidebar-w);
   background: var(--bg2);
+  box-shadow: 1px 0 0 var(--border);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -220,7 +221,7 @@ textarea.input { resize: vertical; min-height: 80px; }
 
 /* ── QR modal ── */
 .qr-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  position: fixed; inset: 0; background: rgba(0,0,0,0.35);
   z-index: 200; display: flex; align-items: center; justify-content: center;
 }
 .qr-card {
@@ -233,7 +234,7 @@ textarea.input { resize: vertical; min-height: 80px; }
 
 /* ── Modal ── */
 .modal-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.65);
+  position: fixed; inset: 0; background: rgba(0,0,0,0.3);
   z-index: 300; display: flex; align-items: center; justify-content: center;
   backdrop-filter: blur(3px);
 }
@@ -293,8 +294,8 @@ select.input {
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--text3); }
+::-webkit-scrollbar-thumb { background: #c5c8d8; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #9999b5; }
 
 /* ── Divider ── */
 .divider { border: none; border-top: 1px solid var(--border); margin: 8px 0; }

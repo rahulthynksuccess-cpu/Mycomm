@@ -19,14 +19,27 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
 
   useEffect(() => {
     if (!activeAccount) return;
-    waAPI.getChats(activeAccount).then(c => {
-      setChats(prev => ({ ...prev, [activeAccount]: c }));
-    }).catch(console.error);
+    // Only fetch chats if account is ready
+    if (statuses[activeAccount]?.status === 'ready') {
+      waAPI.getChats(activeAccount).then(c => {
+        setChats(prev => ({ ...prev, [activeAccount]: c }));
+      }).catch(console.error);
+    }
   }, [activeAccount]);
 
+  // When statuses change: auto-select first ready account if none selected,
+  // and refresh chats when the active account transitions to ready
   useEffect(() => {
     if (!activeAccount && readyAccounts.length > 0) {
       setActiveAccount(readyAccounts[0][0]);
+    }
+    // If active account just became ready, load its chats
+    if (activeAccount && statuses[activeAccount]?.status === 'ready') {
+      waAPI.getChats(activeAccount).then(c => {
+        setChats(prev => ({ ...prev, [activeAccount]: c }));
+      }).catch(console.error);
+      // Also close QR modal if it was open for this account
+      setShowQR(prev => prev === activeAccount ? null : prev);
     }
   }, [statuses]);
 
@@ -188,6 +201,11 @@ export default function WhatsAppTab({ socket, statuses, qrCodes, realtimeMessage
               {activeStatus.status === 'qr' && (
                 <button className="btn btn-primary btn-sm" onClick={() => setShowQR(activeAccount)}>
                   Show QR Code
+                </button>
+              )}
+              {(activeStatus.status === 'disconnected' || activeStatus.status === 'error' || activeStatus.status === 'auth_failure') && (
+                <button className="btn btn-primary btn-sm" style={{ marginTop: 8 }} onClick={() => startSession(activeAccount)}>
+                  🔄 Reconnect
                 </button>
               )}
             </div>

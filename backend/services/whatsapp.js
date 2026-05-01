@@ -27,7 +27,7 @@ function getPuppeteerArgs() {
 async function createClient(accountId, io) {
   if (clients[accountId]) return;
 
-  statuses[accountId] = 'initializing';
+  statuses[accountId] = { status: 'initializing' };
   io.emit('wa:status', { accountId, status: 'initializing' });
 
   // PUPPETEER_EXECUTABLE_PATH set by Dockerfile to /usr/bin/chromium (apt-installed)
@@ -48,26 +48,26 @@ async function createClient(accountId, io) {
 
   client.on('qr', async (qr) => {
     console.log('QR generated for', accountId);
-    statuses[accountId] = 'qr';
+    statuses[accountId] = { status: 'qr' };
     const qrDataUrl = await qrcode.toDataURL(qr);
     io.emit('wa:qr', { accountId, qr: qrDataUrl });
     io.emit('wa:status', { accountId, status: 'qr' });
   });
 
   client.on('authenticated', () => {
-    statuses[accountId] = 'authenticated';
+    statuses[accountId] = { status: 'authenticated' };
     io.emit('wa:status', { accountId, status: 'authenticated' });
   });
 
   client.on('auth_failure', (msg) => {
-    statuses[accountId] = 'auth_failure';
+    statuses[accountId] = { status: 'auth_failure', error: msg };
     io.emit('wa:status', { accountId, status: 'auth_failure', error: msg });
   });
 
   client.on('ready', async () => {
     console.log(accountId, 'ready!');
-    statuses[accountId] = 'ready';
     const info = client.info;
+    statuses[accountId] = { status: 'ready', phone: info.wid.user, name: info.pushname };
     io.emit('wa:status', { accountId, status: 'ready', phone: info.wid.user, name: info.pushname });
     const chats = await getRecentChats(accountId);
     io.emit('wa:chats', { accountId, chats });
@@ -87,16 +87,30 @@ async function createClient(accountId, io) {
   });
 
   client.on('disconnected', (reason) => {
-    statuses[accountId] = 'disconnected';
+    console.log(accountId, 'disconnected:', reason);
+    statuses[accountId] = { status: 'disconnected', reason };
     io.emit('wa:status', { accountId, status: 'disconnected', reason });
     delete clients[accountId];
+    // Auto-reconnect after 5s if session folder still exists (unexpected disconnect)
+    const sessionFolder = path.join(SESSIONS_DIR, `session-${accountId}`);
+    if (fs.existsSync(sessionFolder)) {
+      console.log('Scheduling auto-reconnect for', accountId, 'in 5s...');
+      setTimeout(() => {
+        if (!clients[accountId]) {
+          console.log('Auto-reconnecting', accountId);
+          createClient(accountId, io).catch(err =>
+            console.error('Auto-reconnect failed for', accountId, err.message)
+          );
+        }
+      }, 5000);
+    }
   });
 
   clients[accountId] = client;
 
   await client.initialize().catch(err => {
     console.error('Init failed for', accountId, ':', err.message);
-    statuses[accountId] = 'error';
+    statuses[accountId] = { status: 'error', error: err.message };
     io.emit('wa:status', { accountId, status: 'error', error: err.message });
     delete clients[accountId];
   });
