@@ -75,7 +75,7 @@ export default function App() {
 
     // Cleanup
     return () => socket.disconnect();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const tabs = [
     { id: 'whatsapp', label: 'WhatsApp', icon: '💬' },
