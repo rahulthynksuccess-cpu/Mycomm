@@ -20,7 +20,7 @@ router.post('/sessions', async (req, res) => {
     const { accountId } = req.body;
     const id = accountId || `wa_${uuidv4().slice(0, 8)}`;
     const io = req.app.get('io');
-    await addNewSession(id, io);
+    addNewSession(id, io); // fire and forget — QR comes via socket
     res.json({ success: true, accountId: id, message: 'Session initializing — watch for QR code event.' });
   } catch (err) {
     res.status(400).json({ error: err.message });
