@@ -59,14 +59,7 @@ export default function App() {
     });
 
     socket.on('wa:status', ({ accountId, status, phone, name, error, reason }) => {
-      // Only merge fields that are actually defined — never overwrite real data with undefined
-      const fields = {};
-      if (status    !== undefined) fields.status = status;
-      if (phone     !== undefined) fields.phone  = phone;
-      if (name      !== undefined) fields.name   = name;
-      if (error     !== undefined) fields.error  = error;
-      if (reason    !== undefined) fields.reason = reason;
-      mergeStatus(accountId, fields);
+      mergeStatus(accountId, { status, phone, name, error, reason });
       if (status === 'ready') {
         setWaQRs(prev => { const n = { ...prev }; delete n[accountId]; return n; });
         addNotification('success', `WhatsApp ${name || accountId} connected ✓`);

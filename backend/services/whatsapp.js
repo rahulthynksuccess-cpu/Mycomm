@@ -1,13 +1,5 @@
 /**
  * WhatsApp service — @whiskeysockets/baileys v6.7.x
- * No makeInMemoryStore (removed in 6.7+) — chats/messages managed manually.
- *
- * Fixes applied:
- *  1. Contact name resolution  — listen to contacts.upsert + contacts.update
- *     and messaging-history.set to build a contactMap per account.
- *     buildChatList resolves names: saved name → push name → verified → phone.
- *  2. Message history          — messaging-history.set populates msgMap on
- *     connect so getChatMessages returns real history, not an empty array.
  */
 
 const {
@@ -26,11 +18,11 @@ const fs       = require('fs');
 const qrcode   = require('qrcode');
 
 // ── State ──────────────────────────────────────────────
-const clients    = {};   // accountId → socket
-const statuses   = {};   // accountId → { status, phone, name, error, reason }
-const chatMap    = {};   // accountId → Map<chatId, chatObj>
-const msgMap     = {};   // accountId → Map<chatId, message[]>
-const contactMap = {};   // accountId → Map<jid, { name?, notify?, verifiedName? }>
+const clients     = {};   // accountId → socket
+const statuses    = {};   // accountId → { status, phone, name, error, reason }
+const chatMap     = {};   // accountId → Map<chatId, chatObj>
+const msgMap      = {};   // accountId → Map<chatId, message[]>
+const contactMap  = {};   // accountId → Map<jid, { name, notify }>
 
 const MAX_ACCOUNTS = parseInt(process.env.WA_MAX_ACCOUNTS || '5');
 const SESSIONS_DIR = path.join(__dirname, '..', 'sessions');
@@ -73,38 +65,26 @@ function extractBody(msg) {
     || '';
 }
 
-/** FIX 1: Resolve best display name for a JID from contactMap */
+// Resolve best display name for a JID
 function resolveName(accountId, jid, fallbackPushName) {
   const contact = contactMap[accountId]?.get(jid);
-  return contact?.name
-    || contact?.notify
-    || contact?.verifiedName
-    || fallbackPushName
-    || phoneFromJid(jid)
-    || 'Unknown';
+  return contact?.name || contact?.notify || fallbackPushName || phoneFromJid(jid) || jid;
 }
 
-/** Merge contacts into contactMap */
-function upsertContacts(accountId, contacts) {
-  if (!contactMap[accountId]) contactMap[accountId] = new Map();
-  for (const c of contacts) {
-    if (!c.id) continue;
-    const existing = contactMap[accountId].get(c.id) || {};
-    contactMap[accountId].set(c.id, { ...existing, ...c });
-  }
-}
-
-/** Store messages into msgMap, capped at 200 per chat */
-function storeMessages(accountId, messages) {
-  if (!msgMap[accountId]) msgMap[accountId] = new Map();
-  for (const msg of messages) {
-    const jid = msg.key?.remoteJid;
-    if (!jid) continue;
-    if (!msgMap[accountId].has(jid)) msgMap[accountId].set(jid, []);
-    const arr = msgMap[accountId].get(jid);
-    arr.push(msg);
-    if (arr.length > 200) arr.splice(0, arr.length - 200);
-  }
+function buildChatList(accountId, limit = 50) {
+  const map = chatMap[accountId];
+  if (!map) return [];
+  return [...map.values()]
+    .sort((a, b) => (Number(b.conversationTimestamp) || 0) - (Number(a.conversationTimestamp) || 0))
+    .slice(0, limit)
+    .map(chat => ({
+      id:              chat.id,
+      name:            resolveName(accountId, chat.id, chat.name),
+      lastMessage:     chat.lastMessage || '',
+      lastMessageTime: Number(chat.conversationTimestamp) || 0,
+      unreadCount:     chat.unreadCount || 0,
+      isGroup:         isJidGroup(chat.id),
+    }));
 }
 
 // ── Core ───────────────────────────────────────────────
@@ -143,7 +123,7 @@ async function createClient(accountId, io) {
 
   clients[accountId] = sock;
 
-  // ── Connection updates ─────────────────────────────
+  // ── Connection ─────────────────────────────────────
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
@@ -191,73 +171,31 @@ async function createClient(accountId, io) {
 
   sock.ev.on('creds.update', saveCreds);
 
-  // ── FIX 1 + 2: History sync (fires shortly after connection.open) ──────
-  // Baileys bundles chats + contacts + messages in this one event.
-  sock.ev.on('messaging-history.set', ({ chats, contacts, messages, isLatest }) => {
-    console.log(
-      `[WA] ${accountId} history — chats:${chats.length} contacts:${contacts.length}` +
-      ` messages:${messages.length} isLatest:${isLatest}`
-    );
-
-    // Contacts first — so name resolution works when processing messages
-    if (contacts.length > 0) upsertContacts(accountId, contacts);
-
-    // Chats
-    for (const chat of chats) {
-      chatMap[accountId].set(chat.id, {
-        ...chatMap[accountId].get(chat.id),
-        ...chat,
+  // ── Contacts — store name + notify for display ─────
+  sock.ev.on('contacts.upsert', (contacts) => {
+    for (const c of contacts) {
+      if (!c.id) continue;
+      contactMap[accountId].set(c.id, {
+        name:   c.name   || '',
+        notify: c.notify || '',
       });
     }
-
-    // Messages — store and also mine pushName for individual contacts
-    if (messages.length > 0) {
-      storeMessages(accountId, messages);
-
-      for (const msg of messages) {
-        const jid = msg.key?.remoteJid;
-        if (jid && msg.pushName && !isJidGroup(jid)) {
-          const existing = contactMap[accountId].get(jid) || {};
-          if (!existing.name && !existing.notify) {
-            contactMap[accountId].set(jid, { ...existing, id: jid, notify: msg.pushName });
-          }
-        }
-      }
-
-      // Backfill lastMessage on chats from the newest stored message
-      for (const [jid, msgs] of msgMap[accountId]) {
-        if (!msgs.length) continue;
-        const latest = msgs[msgs.length - 1];
-        const chat   = chatMap[accountId].get(jid) || { id: jid };
-        const ts     = Number(latest.messageTimestamp);
-        if (!chat.conversationTimestamp || ts > Number(chat.conversationTimestamp)) {
-          chatMap[accountId].set(jid, {
-            ...chat,
-            conversationTimestamp: latest.messageTimestamp,
-            lastMessage: extractBody(latest),
-          });
-        }
-      }
-    }
-
-    const list = buildChatList(accountId);
-    if (list.length > 0) io.emit('wa:chats', { accountId, chats: list });
-  });
-
-  // ── FIX 1: Live contact events ─────────────────────
-  sock.ev.on('contacts.upsert', (contacts) => {
-    upsertContacts(accountId, contacts);
+    // Re-push chat list so names update immediately
     const list = buildChatList(accountId);
     if (list.length > 0) io.emit('wa:chats', { accountId, chats: list });
   });
 
   sock.ev.on('contacts.update', (updates) => {
-    upsertContacts(accountId, updates);
+    for (const u of updates) {
+      if (!u.id) continue;
+      const existing = contactMap[accountId].get(u.id) || {};
+      contactMap[accountId].set(u.id, { ...existing, ...u });
+    }
     const list = buildChatList(accountId);
     if (list.length > 0) io.emit('wa:chats', { accountId, chats: list });
   });
 
-  // ── Chats upsert / update ──────────────────────────
+  // ── Chats ──────────────────────────────────────────
   sock.ev.on('chats.upsert', (newChats) => {
     for (const chat of newChats) {
       chatMap[accountId].set(chat.id, {
@@ -270,37 +208,58 @@ async function createClient(accountId, io) {
   });
 
   sock.ev.on('chats.update', (updates) => {
-    for (const update of updates) {
-      const existing = chatMap[accountId].get(update.id) || {};
-      chatMap[accountId].set(update.id, { ...existing, ...update });
+    for (const u of updates) {
+      const existing = chatMap[accountId].get(u.id) || {};
+      chatMap[accountId].set(u.id, { ...existing, ...u });
     }
     const list = buildChatList(accountId);
     if (list.length > 0) io.emit('wa:chats', { accountId, chats: list });
   });
 
-  // ── Messages (live) ────────────────────────────────
+  // ── History sync — fires on first connect with recent chats+messages ──
+  sock.ev.on('messaging-history.set', ({ chats: histChats, contacts: histContacts, messages: histMessages }) => {
+    // Load contacts first so names resolve correctly
+    if (histContacts) {
+      for (const c of histContacts) {
+        if (!c.id) continue;
+        contactMap[accountId].set(c.id, { name: c.name || '', notify: c.notify || '' });
+      }
+    }
+    // Load chats
+    if (histChats) {
+      for (const chat of histChats) {
+        chatMap[accountId].set(chat.id, {
+          ...chatMap[accountId].get(chat.id),
+          ...chat,
+        });
+      }
+    }
+    // Load messages into msgMap
+    if (histMessages) {
+      for (const msg of histMessages) {
+        const jid = msg.key?.remoteJid;
+        if (!jid) continue;
+        if (!msgMap[accountId].has(jid)) msgMap[accountId].set(jid, []);
+        msgMap[accountId].get(jid).push(msg);
+      }
+    }
+    const list = buildChatList(accountId);
+    if (list.length > 0) io.emit('wa:chats', { accountId, chats: list });
+  });
+
+  // ── Messages ───────────────────────────────────────
   sock.ev.on('messages.upsert', ({ messages: msgs, type }) => {
     for (const msg of msgs) {
       const jid = msg.key.remoteJid || '';
       if (!jid) continue;
 
-      // FIX 1: Capture pushName from live messages
-      if (msg.pushName && !isJidGroup(jid)) {
-        const existing = contactMap[accountId].get(jid) || {};
-        contactMap[accountId].set(jid, {
-          ...existing,
-          id: jid,
-          notify: existing.notify || msg.pushName,
-        });
-      }
-
-      // Store
+      // Store in msgMap
       if (!msgMap[accountId].has(jid)) msgMap[accountId].set(jid, []);
       const arr = msgMap[accountId].get(jid);
       arr.push(msg);
       if (arr.length > 200) arr.splice(0, arr.length - 200);
 
-      // Update chat
+      // Update chat entry with latest message info
       const chat = chatMap[accountId].get(jid) || { id: jid };
       chatMap[accountId].set(jid, {
         ...chat,
@@ -308,6 +267,15 @@ async function createClient(accountId, io) {
         lastMessage: extractBody(msg),
       });
 
+      // Also store pushName in contactMap if we don't have a name yet
+      if (msg.pushName) {
+        const existing = contactMap[accountId].get(jid) || {};
+        if (!existing.name && !existing.notify) {
+          contactMap[accountId].set(jid, { ...existing, notify: msg.pushName });
+        }
+      }
+
+      // Emit incoming message to frontend
       if (type === 'notify' && !msg.key.fromMe) {
         const body     = extractBody(msg);
         const fromName = resolveName(accountId, jid, msg.pushName);
@@ -321,7 +289,7 @@ async function createClient(accountId, io) {
           type:        Object.keys(msg.message || {})[0] || 'unknown',
           timestamp:   Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
           isGroup:     isJidGroup(jid),
-          chatName:    fromName,
+          chatName:    resolveName(accountId, jid, msg.pushName),
           hasMedia:    !!(msg.message?.imageMessage || msg.message?.videoMessage
                         || msg.message?.audioMessage || msg.message?.documentMessage),
         });
@@ -331,28 +299,6 @@ async function createClient(accountId, io) {
       }
     }
   });
-}
-
-// FIX 1: buildChatList uses resolveName instead of raw chat.name
-function buildChatList(accountId, limit = 50) {
-  const map = chatMap[accountId];
-  if (!map) return [];
-  return [...map.values()]
-    .sort((a, b) => (Number(b.conversationTimestamp) || 0) - (Number(a.conversationTimestamp) || 0))
-    .slice(0, limit)
-    .map(chat => {
-      const name = isJidGroup(chat.id)
-        ? (chat.name || chat.subject || chat.id)
-        : resolveName(accountId, chat.id, chat.name);
-      return {
-        id:              chat.id,
-        name,
-        lastMessage:     chat.lastMessage || '',
-        lastMessageTime: Number(chat.conversationTimestamp) || 0,
-        unreadCount:     chat.unreadCount || 0,
-        isGroup:         isJidGroup(chat.id),
-      };
-    });
 }
 
 // ── Public API ─────────────────────────────────────────
@@ -400,7 +346,6 @@ async function getRecentChats(accountId, limit = 50) {
   return buildChatList(accountId, limit);
 }
 
-// FIX 2: msgMap is now populated by messaging-history.set, returns real history
 async function getChatMessages(accountId, chatId, limit = 50) {
   const msgs = msgMap[accountId]?.get(chatId) || [];
   return msgs.slice(-limit).map(m => ({
@@ -409,9 +354,7 @@ async function getChatMessages(accountId, chatId, limit = 50) {
     fromMe:    m.key.fromMe || false,
     type:      Object.keys(m.message || {})[0] || 'unknown',
     timestamp: Number(m.messageTimestamp) || 0,
-    author:    isJidGroup(chatId)
-      ? (m.pushName || resolveName(accountId, m.key.participant || '', m.pushName))
-      : null,
+    author:    m.key.participant || null,
   }));
 }
 
