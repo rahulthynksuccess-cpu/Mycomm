@@ -1,24 +1,26 @@
-/**
- * Postgres connection pool.
- * Uses DATABASE_URL env var — set this in Railway from your Postgres addon.
- */
 const { Pool } = require('pg');
 
 if (!process.env.DATABASE_URL) {
-  console.warn('[DB] WARNING: DATABASE_URL not set. Session persistence disabled.');
+  console.error('[DB] FATAL: DATABASE_URL not set.');
 }
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL?.includes('railway')
-    ? { rejectUnauthorized: false }
-    : false,
+  ssl: { rejectUnauthorized: false },
   max: 5,
   idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
 });
 
 pool.on('error', (err) => {
   console.error('[DB] Pool error:', err.message);
+});
+
+// Test connection on startup
+pool.query('SELECT 1').then(() => {
+  console.log('[DB] Postgres connected OK');
+}).catch(err => {
+  console.error('[DB] Postgres connection FAILED:', err.message);
 });
 
 module.exports = { pool };

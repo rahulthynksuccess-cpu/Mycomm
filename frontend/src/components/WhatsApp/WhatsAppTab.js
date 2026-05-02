@@ -76,19 +76,17 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
     }
   }, [statuses[activeAccount]?.status]);
 
-  // ── Close QR modal when account becomes ready OR qr cleared ──
+  // ── Close QR modal only when account is actually ready ──
   useEffect(() => {
     if (!showQR) return;
-    const isReady   = statuses[showQR]?.status === 'ready';
-    const qrCleared = !qrCodes[showQR] && statuses[showQR]
-                      && statuses[showQR]?.status !== 'qr'
-                      && statuses[showQR]?.status !== 'initializing';
-    if (isReady || qrCleared) {
+    const isReady = statuses[showQR]?.status === 'ready'
+                 || statuses[showQR]?.status === 'authenticated';
+    if (isReady) {
       clearTimeout(qrTimerRef.current);
       setShowQR(null);
       setQrTimeout(false);
     }
-  }, [statuses, showQR, qrCodes]);
+  }, [statuses, showQR]);
 
   // ── Handle incoming real-time messages ───────────────
   useEffect(() => {
@@ -128,12 +126,19 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
         setWaStatuses(prev => { const n = { ...prev }; delete n[accountId]; return n; });
         await new Promise(r => setTimeout(r, 1000));
       }
+      setShowQR(accountId);  // open modal first so user sees status
       await waAPI.addSession(accountId);
-      setShowQR(accountId);
       // If no QR arrives within 90s, show timeout error
       qrTimerRef.current = setTimeout(() => setQrTimeout(true), 90000);
     } catch (e) {
-      alert('Failed to start session: ' + (e.response?.data?.error || e.message));
+      const msg = e.response?.data?.error || e.message || 'Unknown error';
+      console.error('[WA] startSession failed:', msg);
+      // Keep modal open and show error via status
+      setWaStatuses(prev => ({
+        ...prev,
+        [accountId]: { ...(prev[accountId] || {}), status: 'error', error: msg },
+      }));
+      setQrTimeout(true);
     }
   }
 
