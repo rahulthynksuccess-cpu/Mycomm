@@ -189,8 +189,12 @@ async function createClient(accountId, io) {
     }
   }
 
-  sock.ev.on('contacts.upsert',  (cs) => { storeContacts(cs); pushChats(); });
-  sock.ev.on('contacts.update',  (cs) => { storeContacts(cs); pushChats(); });
+  sock.ev.on('contacts.upsert', (cs) => {
+    console.log(`[WA] contacts.upsert: ${cs.length} contacts, sample:`, JSON.stringify(cs[0] || {}));
+    storeContacts(cs);
+    pushChats();
+  });
+  sock.ev.on('contacts.update', (cs) => { storeContacts(cs); pushChats(); });
 
   // ── Chats ──────────────────────────────────────────
   function storeChats(list = []) {
@@ -212,7 +216,9 @@ async function createClient(accountId, io) {
 
   // ── History sync: contacts FIRST then chats ────────
   sock.ev.on('messaging-history.set', ({ chats: hc, contacts: hct, messages: hm }) => {
-    // Load contacts FIRST so names resolve correctly
+    console.log(`[WA] messaging-history.set: ${hct?.length||0} contacts, ${hc?.length||0} chats, ${hm?.length||0} msgs`);
+    if (hct?.length) console.log('[WA] sample contact:', JSON.stringify(hct[0]));
+    if (hc?.length)  console.log('[WA] sample chat:', JSON.stringify(hc[0]));
     if (hct?.length) storeContacts(hct);
     if (hc?.length)  storeChats(hc);
     if (hm?.length) {
@@ -229,6 +235,7 @@ async function createClient(accountId, io) {
 
   // ── Incoming messages ──────────────────────────────
   sock.ev.on('messages.upsert', ({ messages: msgs, type }) => {
+    if (msgs.length) console.log(`[WA] messages.upsert type=${type} count=${msgs.length} sample jid=${msgs[0]?.key?.remoteJid} pushName=${msgs[0]?.pushName}`);
     for (const msg of msgs) {
       const jid = msg.key.remoteJid || '';
       if (!jid) continue;
