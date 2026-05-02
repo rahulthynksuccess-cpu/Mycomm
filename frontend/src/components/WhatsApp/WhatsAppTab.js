@@ -20,8 +20,8 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
   useEffect(() => {
     if (!pushedChats || !Object.keys(pushedChats).length) return;
     setChats(prev => ({ ...prev, ...pushedChats }));
-    // Clear pushed chats from parent after merging
-    if (setPushedChats) setPushedChats({});
+    // NOTE: Do NOT clear pushedChats here — it races with the HTTP loadChats call.
+    // App.js will naturally overwrite pushedChats on the next socket event.
   }, [pushedChats]);
 
   // ── Derived ──────────────────────────────────────────
@@ -37,7 +37,11 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
     try {
       const c = await waAPI.getChats(accountId);
       if (Array.isArray(c) && c.length > 0) {
-        setChats(prev => ({ ...prev, [accountId]: c }));
+        // HTTP data wins only if we don't already have socket-pushed chats for this account
+        setChats(prev => ({
+          ...prev,
+          [accountId]: (prev[accountId]?.length > 0 ? prev[accountId] : c),
+        }));
       }
     } catch (e) {
       console.error('[WA] loadChats failed', accountId, e);
@@ -53,24 +57,14 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
     }
   }, [statuses]);
 
-  // ── Load chats whenever active account changes ───────
-  // Depends only on activeAccount so switching always triggers a fresh load.
-  // Also re-fires when status flips to 'ready' for the first time.
-  useEffect(() => {
-    if (!activeAccount) return;
-    // Load immediately if already ready, else wait for ready status below
-    if (statuses[activeAccount]?.status === 'ready') {
-      loadChats(activeAccount);
-    }
-  }, [activeAccount]); // intentionally only activeAccount — avoids stale-value trap
+  // ── Load chats whenever active account changes OR becomes ready ──────────
+  // Derive the current status string to give React a stable primitive to track.
+  const activeAccountStatus = activeAccount ? statuses[activeAccount]?.status : null;
 
-  // Separate effect: fires when an account first becomes ready (e.g. after QR scan)
   useEffect(() => {
-    if (!activeAccount) return;
-    if (statuses[activeAccount]?.status === 'ready') {
-      loadChats(activeAccount);
-    }
-  }, [statuses[activeAccount]?.status]);
+    if (!activeAccount || activeAccountStatus !== 'ready') return;
+    loadChats(activeAccount);
+  }, [activeAccount, activeAccountStatus, loadChats]);
 
   // ── Close QR modal when account becomes ready OR qr cleared ──
   useEffect(() => {
@@ -116,18 +110,23 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
     clearTimeout(qrTimerRef.current);
 
     try {
-      // Only clean up if the session is stuck or failed — never wipe a healthy account
       const existingStatus = statuses[accountId]?.status;
-      const isStuck = existingStatus && !['ready', 'initializing', 'authenticated'].includes(existingStatus);
-      if (isStuck) {
+
+      // Only wipe the session on a true auth failure (logged out / bad session).
+      // For disconnected / error, just reconnect — do NOT delete the session folder.
+      const needsWipe = existingStatus === 'auth_failure';
+      if (needsWipe) {
         await waAPI.removeSession(accountId).catch(() => {});
         setWaStatuses(prev => { const n = { ...prev }; delete n[accountId]; return n; });
         await new Promise(r => setTimeout(r, 1000));
       }
+
       await waAPI.addSession(accountId);
-      setShowQR(accountId);
-      // If no QR arrives within 90s, show timeout error
-      qrTimerRef.current = setTimeout(() => setQrTimeout(true), 90000);
+      // Only show QR modal if we wiped the session (auth_failure) — reconnects reuse existing creds
+      if (needsWipe) {
+        setShowQR(accountId);
+        qrTimerRef.current = setTimeout(() => setQrTimeout(true), 90000);
+      }
     } catch (e) {
       alert('Failed to start session: ' + (e.response?.data?.error || e.message));
     }
