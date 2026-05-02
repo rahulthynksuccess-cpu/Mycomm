@@ -144,6 +144,8 @@ async function createClient(accountId, io) {
       console.log(`[WA] ${accountId} ready — ${phone}`);
       io.emit('wa:qr', { accountId, qr: null });
       emitStatus(io, accountId, { status: 'ready', phone, name });
+      // Push chats after 3s to allow history sync + contacts to arrive
+      setTimeout(() => pushChats(), 3000);
     }
 
     if (connection === 'close') {
@@ -209,12 +211,10 @@ async function createClient(accountId, io) {
   sock.ev.on('chats.update', (cs) => { storeChats(cs); pushChats(); });
 
   // ── History sync: contacts FIRST then chats ────────
-  sock.ev.on('messaging-history.set', ({ chats: hc, contacts: hct, messages: hm, isLatest }) => {
-    // 1. contacts first so resolveName works when we push chats
+  sock.ev.on('messaging-history.set', ({ chats: hc, contacts: hct, messages: hm }) => {
+    // Load contacts FIRST so names resolve correctly
     if (hct?.length) storeContacts(hct);
-    // 2. chats
     if (hc?.length)  storeChats(hc);
-    // 3. messages
     if (hm?.length) {
       for (const msg of hm) {
         const jid = msg.key?.remoteJid;
@@ -223,7 +223,8 @@ async function createClient(accountId, io) {
         msgMap[accountId].get(jid).push(msg);
       }
     }
-    pushChats();
+    // Wait 2s for any trailing contacts.upsert events before pushing
+    setTimeout(() => pushChats(), 2000);
   });
 
   // ── Incoming messages ──────────────────────────────

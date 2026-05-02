@@ -40,14 +40,22 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
   // ── Load chats for an account ────────────────────────
   const loadChats = useCallback(async (accountId) => {
     if (!accountId) return;
-    try {
-      const c = await waAPI.getChats(accountId);
-      if (Array.isArray(c) && c.length > 0) {
-        setChats(prev => ({ ...prev, [accountId]: c }));
+    // Try immediately, then retry after 4s if empty (backend needs time to sync)
+    const attempt = async () => {
+      try {
+        const c = await waAPI.getChats(accountId);
+        if (Array.isArray(c) && c.length > 0) {
+          setChats(prev => ({ ...prev, [accountId]: c }));
+          return true;
+        }
+        return false;
+      } catch (e) {
+        console.error('[WA] loadChats failed', accountId, e);
+        return false;
       }
-    } catch (e) {
-      console.error('[WA] loadChats failed', accountId, e);
-    }
+    };
+    const got = await attempt();
+    if (!got) setTimeout(() => attempt(), 4000);  // retry once after 4s
   }, []);
 
   // ── Auto-select first ready account (only when none selected) ──
