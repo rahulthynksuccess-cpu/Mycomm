@@ -21,13 +21,42 @@ export default function EmailTab() {
   const [sending, setSending] = useState(false);
   const [folders, setFolders] = useState([]);
   const [selectedEmails, setSelectedEmails] = useState(new Set());
+  const [showAddAccount, setShowAddAccount] = useState(false);
+  const [addingAccount, setAddingAccount] = useState(false);
+  const [accountType, setAccountType] = useState('gmail');
+  const [newAccount, setNewAccount] = useState({ label:'', user:'', password:'' });
+  const [addError, setAddError] = useState('');
 
-  useEffect(() => {
+  const loadAccounts = useCallback(() => {
     emailAPI.getAccounts().then(accs => {
       setAccounts(accs);
-      if (accs.length) setActiveAccount(accs[0].id);
+      if (accs.length && !activeAccount) setActiveAccount(accs[0].id);
     }).catch(console.error);
-  }, []);
+  }, [activeAccount]);
+
+  useEffect(() => { loadAccounts(); }, []);
+
+  async function handleAddAccount() {
+    if (!newAccount.label || !newAccount.user || !newAccount.password) {
+      setAddError('All fields are required'); return;
+    }
+    setAddingAccount(true); setAddError('');
+    try {
+      await emailAPI.addAccount({ ...newAccount, type: accountType });
+      setNewAccount({ label:'', user:'', password:'' });
+      setShowAddAccount(false);
+      loadAccounts();
+    } catch (e) {
+      setAddError(e.response?.data?.error || e.message);
+    }
+    setAddingAccount(false);
+  }
+
+  async function handleDeleteAccount(id) {
+    if (!window.confirm('Remove this email account?')) return;
+    await emailAPI.deleteAccount(id).catch(() => {});
+    loadAccounts();
+  }
 
   useEffect(() => {
     if (!activeAccount) return;
@@ -153,44 +182,130 @@ export default function EmailTab() {
         <button className="btn btn-primary" onClick={() => setComposing(true)}>✏️ Compose</button>
       </div>
 
-      <div className="tab-body">
-        {/* Left sidebar: accounts + folders */}
-        <div className="panel-left" style={{ width: 220 }}>
-          {/* Account switcher */}
-          <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)' }}>
-            <div className="section-label" style={{ padding: '0 0 6px' }}>Accounts</div>
-            {accounts.map(acc => (
-              <button
-                key={acc.id}
-                onClick={() => { setActiveAccount(acc.id); setPage(1); }}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 8, width: '100%',
-                  padding: '6px 8px', borderRadius: 7, border: 'none', cursor: 'pointer', marginBottom: 2,
-                  background: activeAccount === acc.id ? 'var(--accent-t)' : 'transparent',
-                  color: activeAccount === acc.id ? 'var(--accent)' : 'var(--text2)',
-                }}
-              >
-                <div style={{
-                  width: 8, height: 8, borderRadius: '50%', background: acc.color || 'var(--accent)',
-                  flexShrink: 0,
-                }} />
-                <div style={{ textAlign: 'left', flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{acc.label}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{acc.user}</div>
+      {/* ── Accounts top panel ── */}
+      <div style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg)', flexShrink: 0 }}>
+        {/* Gmail block */}
+        {(() => {
+          const gmailAccounts = accounts.filter(a => a.type === 'gmail');
+          const zohoAccounts  = accounts.filter(a => a.type === 'zoho');
+          return (
+            <div style={{ display: 'flex', gap: 0, overflowX: 'auto' }}>
+              {/* Gmail section */}
+              <div style={{ borderRight: '1px solid var(--border)', minWidth: 220, flexShrink: 0 }}>
+                <div style={{ padding: '8px 14px 4px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text3)', letterSpacing: '.06em', textTransform: 'uppercase' }}>Gmail</span>
+                  <span style={{ fontSize: 18 }}>📧</span>
                 </div>
-              </button>
-            ))}
-            {accounts.length === 0 && (
-              <div style={{ fontSize: 12, color: 'var(--text3)', padding: '4px 0' }}>
-                Add accounts in Settings.
+                <div style={{ display: 'flex', padding: '0 8px 8px', gap: 6, flexWrap: 'wrap' }}>
+                  {gmailAccounts.length === 0 && (
+                    <span style={{ fontSize: 12, color: 'var(--text3)', padding: '4px 6px' }}>No Gmail accounts</span>
+                  )}
+                  {gmailAccounts.map(acc => (
+                    <button
+                      key={acc.id}
+                      onClick={() => { setActiveAccount(acc.id); setPage(1); setActiveFolder('INBOX'); }}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 6, padding: '5px 10px',
+                        borderRadius: 20, border: activeAccount === acc.id ? '1.5px solid var(--accent)' : '1px solid var(--border)',
+                        background: activeAccount === acc.id ? 'var(--accent-t)' : 'var(--bg2)',
+                        cursor: 'pointer', fontSize: 13, color: activeAccount === acc.id ? 'var(--accent)' : 'var(--text2)',
+                      }}
+                    >
+                      <div style={{ width: 22, height: 22, borderRadius: '50%', background: '#EA4335', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#fff', fontWeight: 700, flexShrink: 0 }}>
+                        {acc.label[0].toUpperCase()}
+                      </div>
+                      <div style={{ textAlign: 'left', minWidth: 0 }}>
+                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{acc.label}</div>
+                        <div style={{ fontSize: 11, color: 'var(--text3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 130 }}>{acc.user}</div>
+                      </div>
+                      <button onClick={e => { e.stopPropagation(); handleDeleteAccount(acc.id); }}
+                        style={{ marginLeft: 2, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text3)', fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => { setAccountType('gmail'); setShowAddAccount(p => p === 'gmail' ? false : 'gmail'); }}
+                    style={{ padding: '5px 10px', borderRadius: 20, border: '1px dashed var(--border)', background: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--accent)' }}
+                  >+ Add</button>
+                </div>
               </div>
+
+              {/* Zoho section */}
+              <div style={{ minWidth: 220, flexShrink: 0 }}>
+                <div style={{ padding: '8px 14px 4px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text3)', letterSpacing: '.06em', textTransform: 'uppercase' }}>Zoho Mail</span>
+                  <span style={{ fontSize: 18 }}>📮</span>
+                </div>
+                <div style={{ display: 'flex', padding: '0 8px 8px', gap: 6, flexWrap: 'wrap' }}>
+                  {zohoAccounts.length === 0 && (
+                    <span style={{ fontSize: 12, color: 'var(--text3)', padding: '4px 6px' }}>No Zoho accounts</span>
+                  )}
+                  {zohoAccounts.map(acc => (
+                    <button
+                      key={acc.id}
+                      onClick={() => { setActiveAccount(acc.id); setPage(1); setActiveFolder('INBOX'); }}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 6, padding: '5px 10px',
+                        borderRadius: 20, border: activeAccount === acc.id ? '1.5px solid var(--accent)' : '1px solid var(--border)',
+                        background: activeAccount === acc.id ? 'var(--accent-t)' : 'var(--bg2)',
+                        cursor: 'pointer', fontSize: 13, color: activeAccount === acc.id ? 'var(--accent)' : 'var(--text2)',
+                      }}
+                    >
+                      <div style={{ width: 22, height: 22, borderRadius: '50%', background: '#E05D2E', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#fff', fontWeight: 700, flexShrink: 0 }}>
+                        {acc.label[0].toUpperCase()}
+                      </div>
+                      <div style={{ textAlign: 'left', minWidth: 0 }}>
+                        <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{acc.label}</div>
+                        <div style={{ fontSize: 11, color: 'var(--text3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 130 }}>{acc.user}</div>
+                      </div>
+                      <button onClick={e => { e.stopPropagation(); handleDeleteAccount(acc.id); }}
+                        style={{ marginLeft: 2, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text3)', fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => { setAccountType('zoho'); setShowAddAccount(p => p === 'zoho' ? false : 'zoho'); }}
+                    style={{ padding: '5px 10px', borderRadius: 20, border: '1px dashed var(--border)', background: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--accent)' }}
+                  >+ Add</button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Add account inline form */}
+        {showAddAccount && (
+          <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border)', background: 'var(--bg2)', display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <label style={{ fontSize: 11, color: 'var(--text3)' }}>Label</label>
+              <input placeholder="e.g. Work" value={newAccount.label} onChange={e => setNewAccount(p => ({...p, label:e.target.value}))} style={{ width: 110, fontSize: 13 }} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <label style={{ fontSize: 11, color: 'var(--text3)' }}>Email</label>
+              <input placeholder="you@gmail.com" type="email" value={newAccount.user} onChange={e => setNewAccount(p => ({...p, user:e.target.value}))} style={{ width: 180, fontSize: 13 }} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <label style={{ fontSize: 11, color: 'var(--text3)' }}>{showAddAccount === 'gmail' ? 'App password' : 'Password'}</label>
+              <input placeholder="••••••••••••••••" type="password" value={newAccount.password} onChange={e => setNewAccount(p => ({...p, password:e.target.value}))} style={{ width: 160, fontSize: 13 }} />
+            </div>
+            {addError && <span style={{ fontSize: 12, color: 'var(--danger)' }}>{addError}</span>}
+            <button onClick={handleAddAccount} disabled={addingAccount} className="btn btn-primary btn-sm">
+              {addingAccount ? 'Saving…' : 'Save'}
+            </button>
+            <button onClick={() => { setShowAddAccount(false); setAddError(''); setNewAccount({label:'',user:'',password:''}); }} className="btn btn-sm">Cancel</button>
+            {showAddAccount === 'gmail' && (
+              <span style={{ fontSize: 11, color: 'var(--text3)' }}>
+                Gmail requires an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>App Password</a>
+              </span>
             )}
           </div>
+        )}
+      </div>
 
-          {/* Folder list */}
-          <div style={{ overflowY: 'auto', flex: 1 }}>
+      <div className="tab-body">
+        {/* Left sidebar: folders only */}
+        <div className="panel-left" style={{ width: 180 }}>
+          <div style={{ overflowY: 'auto', flex: 1, paddingTop: 6 }}>
             <div className="section-label">Folders</div>
-            {FOLDERS.map(f => (
+            {['INBOX', 'Sent'].map(f => (
               <button
                 key={f}
                 onClick={() => { setActiveFolder(f); setPage(1); setSearchResults(null); setSearchQ(''); }}
@@ -200,6 +315,22 @@ export default function EmailTab() {
                   background: activeFolder === f ? 'var(--accent-t)' : 'transparent',
                   color: activeFolder === f ? 'var(--accent)' : 'var(--text2)',
                   fontSize: 13.5,
+                }}
+              >
+                {folderIcon(f)} {f}
+              </button>
+            ))}
+            <div style={{ borderTop: '1px solid var(--border)', marginTop: 4 }} />
+            {FOLDERS.filter(f => f !== 'INBOX' && f !== 'Sent').map(f => (
+              <button
+                key={f}
+                onClick={() => { setActiveFolder(f); setPage(1); setSearchResults(null); setSearchQ(''); }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+                  padding: '7px 14px', border: 'none', cursor: 'pointer',
+                  background: activeFolder === f ? 'var(--accent-t)' : 'transparent',
+                  color: activeFolder === f ? 'var(--accent)' : 'var(--text2)',
+                  fontSize: 13,
                 }}
               >
                 {folderIcon(f)} {f}

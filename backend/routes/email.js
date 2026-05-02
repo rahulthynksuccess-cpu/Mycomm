@@ -11,12 +11,64 @@ const {
   getFolders,
 } = require('../services/email');
 
+const { pool } = require('../services/db');
+
 // GET /api/email/accounts — list all configured email accounts
-router.get('/accounts', (req, res) => {
-  const accounts = getAccounts().map(({ id, label, user, type, color }) => ({
-    id, label, user, type, color,
-  }));
+router.get('/accounts', async (req, res) => {
+  // Try DB first, fall back to env var
+  if (pool) {
+    try {
+      const r = await pool.query("SELECT value FROM wa_sessions WHERE account_id = 'system' AND key = 'email_accounts'");
+      if (r.rows.length) {
+        const accounts = JSON.parse(r.rows[0].value);
+        return res.json(accounts.map(({ id, label, user, type, color }) => ({ id, label, user, type, color })));
+      }
+    } catch (e) {}
+  }
+  const accounts = getAccounts().map(({ id, label, user, type, color }) => ({ id, label, user, type, color }));
   res.json(accounts);
+});
+
+// POST /api/email/accounts — add a new email account
+router.post('/accounts', async (req, res) => {
+  const { id, label, user, password, type, color } = req.body;
+  if (!label || !user || !password || !type) return res.status(400).json({ error: 'Missing required fields' });
+  if (!pool) return res.status(500).json({ error: 'Database not available' });
+  try {
+    // Load existing accounts
+    let accounts = [];
+    const r = await pool.query("SELECT value FROM wa_sessions WHERE account_id = 'system' AND key = 'email_accounts'");
+    if (r.rows.length) accounts = JSON.parse(r.rows[0].value);
+    // Add new account
+    const newAccount = { id: id || 'email_' + Date.now(), label, user, password, type, color: color || type };
+    accounts.push(newAccount);
+    await pool.query(
+      `INSERT INTO wa_sessions (account_id, key, value) VALUES ('system', 'email_accounts', $1)
+       ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value`,
+      [JSON.stringify(accounts)]
+    );
+    res.json({ success: true, id: newAccount.id });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /api/email/accounts/:accountId — remove an email account
+router.delete('/accounts/:accountId', async (req, res) => {
+  if (!pool) return res.status(500).json({ error: 'Database not available' });
+  try {
+    const r = await pool.query("SELECT value FROM wa_sessions WHERE account_id = 'system' AND key = 'email_accounts'");
+    let accounts = r.rows.length ? JSON.parse(r.rows[0].value) : [];
+    accounts = accounts.filter(a => a.id !== req.params.accountId);
+    await pool.query(
+      `INSERT INTO wa_sessions (account_id, key, value) VALUES ('system', 'email_accounts', $1)
+       ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value`,
+      [JSON.stringify(accounts)]
+    );
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // GET /api/email/:accountId/folders — get folder/label list

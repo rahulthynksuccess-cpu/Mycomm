@@ -3,13 +3,32 @@ const { simpleParser } = require('mailparser');
 const nodemailer = require('nodemailer');
 
 // ─── Account config from .env ──────────────────────────
+const { pool } = require('./db');
+
+// In-memory cache so we don't hit DB on every email fetch
+let _accountsCache = null;
+
+async function getAccountsFromDb() {
+  if (!pool) return null;
+  try {
+    const r = await pool.query("SELECT value FROM wa_sessions WHERE account_id = 'system' AND key = 'email_accounts'");
+    if (r.rows.length) return JSON.parse(r.rows[0].value);
+  } catch (e) {}
+  return null;
+}
+
 function getAccounts() {
   try {
     return JSON.parse(process.env.EMAIL_ACCOUNTS || '[]');
   } catch (e) {
-    console.error('Invalid EMAIL_ACCOUNTS in .env:', e.message);
     return [];
   }
+}
+
+async function getAccountsAsync() {
+  const dbAccounts = await getAccountsFromDb();
+  if (dbAccounts && dbAccounts.length) return dbAccounts;
+  return getAccounts();
 }
 
 // ─── IMAP config per provider ──────────────────────────

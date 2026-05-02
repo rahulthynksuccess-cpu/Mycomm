@@ -10,6 +10,8 @@ const api = axios.create({ baseURL: BASE, timeout: 30000 });
 // ─── Email ─────────────────────────────────────────────
 export const emailAPI = {
   getAccounts: () => api.get('/api/email/accounts').then(r => r.data),
+  addAccount: (data) => api.post('/api/email/accounts', data).then(r => r.data),
+  deleteAccount: (accountId) => api.delete(`/api/email/accounts/${accountId}`).then(r => r.data),
   getFolders: (accountId) => api.get(`/api/email/${accountId}/folders`).then(r => r.data),
   getMessages: (accountId, params = {}) => api.get(`/api/email/${accountId}/messages`, { params }).then(r => r.data),
   getBody: (accountId, uid, folder) => api.get(`/api/email/${accountId}/messages/${uid}`, { params: { folder } }).then(r => r.data),
