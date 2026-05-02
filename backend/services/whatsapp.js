@@ -5,17 +5,16 @@
 const {
   default: makeWASocket,
   DisconnectReason,
-  useMultiFileAuthState,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   isJidGroup,
 } = require('@whiskeysockets/baileys');
 
-const { Boom } = require('@hapi/boom');
-const pino     = require('pino');
-const path     = require('path');
-const fs       = require('fs');
-const qrcode   = require('qrcode');
+const { usePostgresAuthState } = require('./pgAuthState');
+const { pool }  = require('./db');
+const { Boom }  = require('@hapi/boom');
+const pino      = require('pino');
+const qrcode    = require('qrcode');
 
 const clients     = {};
 const statuses    = {};
@@ -24,8 +23,6 @@ const msgMap      = {};
 const contactMap  = {};
 
 const MAX_ACCOUNTS = parseInt(process.env.WA_MAX_ACCOUNTS || '5');
-const SESSIONS_DIR = path.join(__dirname, '..', 'sessions');
-if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
 const logger = pino({ level: 'silent' });
 
@@ -38,19 +35,16 @@ async function getWAVersion() {
   return _waVersion;
 }
 
-function sessionDir(accountId) {
-  const d = path.join(SESSIONS_DIR, `session-${accountId}`);
-  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
-  return d;
-}
-
 function emitStatus(io, accountId, fields) {
   statuses[accountId] = { ...(statuses[accountId] || {}), ...fields };
   io.emit('wa:status', { accountId, ...statuses[accountId] });
 }
 
 function phoneFromJid(jid = '') {
-  return jid.split('@')[0].replace(/[^0-9]/g, '');
+  // JID format can be: 919241400000@s.whatsapp.net
+  // or multi-device:   919241400000:12@s.whatsapp.net
+  // Strip @... first, then :deviceid, then non-digits
+  return jid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
 }
 
 function extractBody(msg) {
@@ -98,7 +92,7 @@ async function createClient(accountId, io) {
     error: undefined, reason: undefined,
   });
 
-  const { state, saveCreds } = await useMultiFileAuthState(sessionDir(accountId));
+  const { state, saveCreds, removeAll } = await usePostgresAuthState(accountId);
   const version              = await getWAVersion();
 
   const sock = makeWASocket({
@@ -144,7 +138,7 @@ async function createClient(accountId, io) {
       delete clients[accountId];
 
       if (loggedOut || badSession) {
-        fs.rmSync(sessionDir(accountId), { recursive: true, force: true });
+        await removeAll().catch(() => {});
         delete chatMap[accountId];
         delete msgMap[accountId];
         delete contactMap[accountId];
@@ -268,7 +262,7 @@ async function createClient(accountId, io) {
 
 async function initWhatsApp(io) {
   await getWAVersion().catch(() => {});
-  const saved = getSavedSessionIds();
+  const saved = await getSavedSessionIds();
   console.log('[WA] Restoring sessions:', saved);
   for (let i = 0; i < saved.length; i++) {
     if (i > 0) await new Promise(r => setTimeout(r, 3000));
@@ -289,12 +283,12 @@ async function disconnectSession(accountId) {
     try { clients[accountId].end(undefined); } catch (_) {}
     delete clients[accountId];
   }
+  // Delete from Postgres
+  await pool.query('DELETE FROM wa_sessions WHERE account_id = $1', [accountId]).catch(() => {});
   delete chatMap[accountId];
   delete msgMap[accountId];
   delete contactMap[accountId];
   delete statuses[accountId];
-  const dir = path.join(SESSIONS_DIR, `session-${accountId}`);
-  if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
 }
 
 async function sendWAMessage(accountId, to, body) {
@@ -323,26 +317,16 @@ async function getChatMessages(accountId, chatId, limit = 50) {
 
 function getStatuses() { return statuses; }
 
-function getSavedSessionIds() {
-  if (!fs.existsSync(SESSIONS_DIR)) return [];
-  const allEntries = fs.readdirSync(SESSIONS_DIR);
-  for (const entry of allEntries) {
-    const fullPath = path.join(SESSIONS_DIR, entry);
-    if (!fs.statSync(fullPath).isDirectory()) continue;
-    const isBaileysDir = entry.startsWith('session-');
-    const accountId    = isBaileysDir ? entry.replace('session-', '') : null;
-    const isNumeric    = !accountId || /^\d+$/.test(accountId);
-    const hasCreds     = isBaileysDir && fs.existsSync(path.join(fullPath, 'creds.json'));
-    if (!isBaileysDir || isNumeric || !hasCreds) {
-      console.log('[WA] Purging invalid session:', entry);
-      fs.rmSync(fullPath, { recursive: true, force: true });
-    }
+async function getSavedSessionIds() {
+  try {
+    const res = await pool.query(
+      "SELECT DISTINCT account_id FROM wa_sessions WHERE key = 'creds'"
+    );
+    return res.rows.map(r => r.account_id);
+  } catch (e) {
+    console.error('[WA] getSavedSessionIds error:', e.message);
+    return [];
   }
-  return fs.readdirSync(SESSIONS_DIR)
-    .filter(d => d.startsWith('session-')
-      && fs.statSync(path.join(SESSIONS_DIR, d)).isDirectory()
-      && fs.existsSync(path.join(SESSIONS_DIR, d, 'creds.json')))
-    .map(d => d.replace('session-', ''));
 }
 
 module.exports = {
