@@ -363,33 +363,32 @@ function getStatuses() { return statuses; }
 function getSavedSessionIds() {
   if (!fs.existsSync(SESSIONS_DIR)) return [];
 
-  const dirs = fs.readdirSync(SESSIONS_DIR)
-    .filter(d => d.startsWith('session-')
-      && fs.statSync(path.join(SESSIONS_DIR, d)).isDirectory());
+  // Wipe EVERYTHING that is not a valid Baileys session
+  // This cleans up old whatsapp-web.js numeric folders (0, 1, 2...)
+  // AND old session-0, session-1 style folders
+  const allEntries = fs.readdirSync(SESSIONS_DIR);
+  for (const entry of allEntries) {
+    const fullPath = path.join(SESSIONS_DIR, entry);
+    if (!fs.statSync(fullPath).isDirectory()) continue;
 
-  const valid = [];
-  for (const d of dirs) {
-    const accountId = d.replace('session-', '');
+    // Valid Baileys session = starts with 'session-', non-numeric id, has creds.json
+    const isBaileysDir = entry.startsWith('session-');
+    const accountId    = isBaileysDir ? entry.replace('session-', '') : null;
+    const isNumeric    = !accountId || /^\d+$/.test(accountId);
+    const hasCreds     = isBaileysDir && fs.existsSync(path.join(fullPath, 'creds.json'));
 
-    // Skip pure-numeric IDs — these are leftover from old whatsapp-web.js sessions
-    if (/^\d+$/.test(accountId)) {
-      console.log('[WA] Removing stale numeric session:', d);
-      fs.rmSync(path.join(SESSIONS_DIR, d), { recursive: true, force: true });
-      continue;
+    if (!isBaileysDir || isNumeric || !hasCreds) {
+      console.log('[WA] Purging invalid session dir:', entry);
+      fs.rmSync(fullPath, { recursive: true, force: true });
     }
-
-    // Must contain creds.json to be a valid Baileys session
-    const credsFile = path.join(SESSIONS_DIR, d, 'creds.json');
-    if (!fs.existsSync(credsFile)) {
-      console.log('[WA] Removing empty session dir:', d);
-      fs.rmSync(path.join(SESSIONS_DIR, d), { recursive: true, force: true });
-      continue;
-    }
-
-    valid.push(accountId);
   }
 
-  return valid;
+  // Now only valid sessions remain
+  return fs.readdirSync(SESSIONS_DIR)
+    .filter(d => d.startsWith('session-')
+      && fs.statSync(path.join(SESSIONS_DIR, d)).isDirectory()
+      && fs.existsSync(path.join(SESSIONS_DIR, d, 'creds.json')))
+    .map(d => d.replace('session-', ''));
 }
 
 module.exports = {
