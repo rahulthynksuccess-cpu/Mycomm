@@ -142,11 +142,18 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
   }, [messages]);
 
   // ── Scroll to bottom when opening a new chat ──────────
+  // Fire when messages actually load (not just when chat is selected)
+  const prevChatId = useRef(null);
   useEffect(() => {
-    setTimeout(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
-    }, 100);
-  }, [activeChat?.id]);
+    if (!messages.length) return;
+    if (activeChat?.id !== prevChatId.current) {
+      prevChatId.current = activeChat?.id;
+      // Use setTimeout to ensure DOM has rendered
+      setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
+      }, 50);
+    }
+  }, [messages, activeChat?.id]);
 
   // ── Session management ───────────────────────────────
   async function startSession(accountId) {

@@ -362,6 +362,17 @@ async function createClient(accountId, io) {
         lastMessage: extractBody(msg),
       });
 
+      // Save updated messages for this chat to DB
+      if (pool) {
+        const chatMsgs = (msgMap[accountId].get(jid) || []).slice(-200);
+        pool.query(
+          `INSERT INTO wa_sessions (account_id, key, value)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value`,
+          [accountId, `msgs_${jid}`, JSON.stringify(chatMsgs)]
+        ).catch(() => {});
+      }
+
       // cache pushName if we have no better name
       if (msg.pushName) {
         const ec = contactMap[accountId].get(jid) || {};
@@ -442,6 +453,20 @@ async function getRecentChats(accountId, limit = 50) {
 
 async function getChatMessages(accountId, chatId, limit = 200) {
   let msgs = msgMap[accountId]?.get(chatId) || [];
+
+  // If no cached messages, try loading from DB
+  if (msgs.length === 0 && pool) {
+    try {
+      const res = await pool.query(
+        "SELECT value FROM wa_sessions WHERE account_id = $1 AND key = $2",
+        [accountId, `msgs_${chatId}`]
+      );
+      if (res.rows.length) {
+        msgs = JSON.parse(res.rows[0].value);
+        if (msgs.length) msgMap[accountId].set(chatId, msgs);
+      }
+    } catch (e) {}
+  }
 
 
 
