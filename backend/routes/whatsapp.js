@@ -45,7 +45,7 @@ router.get('/:accountId/chats/:chatId/messages', async (req, res) => {
     const msgs = await getChatMessages(
       req.params.accountId,
       decodeURIComponent(req.params.chatId),
-      parseInt(req.query.limit) || 50
+      parseInt(req.query.limit) || 200
     );
     res.json(msgs);
   } catch (err) {

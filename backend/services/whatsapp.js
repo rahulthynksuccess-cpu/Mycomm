@@ -227,8 +227,19 @@ async function createClient(accountId, io) {
     }
   }
 
-  sock.ev.on('contacts.upsert', (cs) => { storeContacts(cs); pushChats(); });
-  sock.ev.on('contacts.update', (cs) => { storeContacts(cs); pushChats(); });
+  function saveContactsToDb() {
+    if (!pool) return;
+    const obj = {};
+    for (const [jid, c] of contactMap[accountId]) obj[jid] = c;
+    pool.query(
+      `INSERT INTO wa_sessions (account_id, key, value) VALUES ($1, 'contacts_cache', $2)
+       ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value`,
+      [accountId, JSON.stringify(obj)]
+    ).catch(() => {});
+  }
+
+  sock.ev.on('contacts.upsert', (cs) => { storeContacts(cs); saveContactsToDb(); pushChats(); });
+  sock.ev.on('contacts.update', (cs) => { storeContacts(cs); saveContactsToDb(); pushChats(); });
 
   // ── Chats ──────────────────────────────────────────
   function storeChats(list = []) {
@@ -257,17 +268,33 @@ async function createClient(accountId, io) {
     }
   }
 
-  // Load chats from DB cache immediately on start
+  // Load chats and messages from DB cache immediately on start
   if (pool) {
     pool.query(
-      "SELECT value FROM wa_sessions WHERE account_id = $1 AND key = 'chats_cache'",
+      "SELECT key, value FROM wa_sessions WHERE account_id = $1 AND key IN ('chats_cache','msgs_cache','contacts_cache')",
       [accountId]
     ).then(res => {
-      if (res.rows.length) {
-        const cached = JSON.parse(res.rows[0].value);
-        if (cached?.length) {
-          io.emit('wa:chats', { accountId, chats: cached });
-          console.log(`[WA] Loaded ${cached.length} chats from DB cache for ${accountId}`);
+      for (const row of res.rows) {
+        if (row.key === 'chats_cache') {
+          const cached = JSON.parse(row.value);
+          if (cached?.length) {
+            io.emit('wa:chats', { accountId, chats: cached });
+            console.log(`[WA] Loaded ${cached.length} chats from DB cache for ${accountId}`);
+          }
+        }
+        if (row.key === 'msgs_cache') {
+          const cached = JSON.parse(row.value);
+          for (const [jid, msgs] of Object.entries(cached)) {
+            msgMap[accountId].set(jid, msgs);
+          }
+          console.log(`[WA] Loaded messages cache for ${accountId}`);
+        }
+        if (row.key === 'contacts_cache') {
+          const cached = JSON.parse(row.value);
+          for (const [jid, c] of Object.entries(cached)) {
+            contactMap[accountId].set(jid, c);
+          }
+          console.log(`[WA] Loaded contacts cache for ${accountId}`);
         }
       }
     }).catch(() => {});
@@ -282,18 +309,32 @@ async function createClient(accountId, io) {
     if (hct?.length) storeContacts(hct);
     if (hc?.length)  storeChats(hc);
     if (hm?.length) {
+      const byChat = {};
       for (const msg of hm) {
         const jid = msg.key?.remoteJid;
         if (!jid || !msg.message) continue;
         if (!msgMap[accountId].has(jid)) msgMap[accountId].set(jid, []);
         msgMap[accountId].get(jid).push(msg);
+        byChat[jid] = true;
       }
       // Sort each chat's messages by timestamp
-      for (const [jid, msgs] of msgMap[accountId]) {
+      for (const [jid] of Object.entries(byChat)) {
+        const msgs = msgMap[accountId].get(jid) || [];
         msgs.sort((a, b) => Number(a.messageTimestamp) - Number(b.messageTimestamp));
       }
+      // Save messages to DB cache
+      if (pool) {
+        const allMsgs = {};
+        for (const [jid, msgs] of msgMap[accountId]) {
+          allMsgs[jid] = msgs.slice(-200);
+        }
+        pool.query(
+          `INSERT INTO wa_sessions (account_id, key, value) VALUES ($1, 'msgs_cache', $2)
+           ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value`,
+          [accountId, JSON.stringify(allMsgs)]
+        ).catch(() => {});
+      }
     }
-    // Wait 2s for any trailing contacts.upsert events before pushing
     setTimeout(() => pushChats(), 2000);
   });
 
