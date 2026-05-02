@@ -255,15 +255,23 @@ async function createClient(accountId, io) {
     const list = buildChatList(accountId);
     if (list.length > 0) {
       io.emit('wa:chats', { accountId, chats: list });
-      // Persist to DB so chats survive restarts
-      if (pool) {
-        const json = JSON.stringify(list);
+      // Only save to DB if we have more chats than what's already cached
+      // This prevents a single incoming message from overwriting the full cache
+      if (pool && list.length >= (chatMap[accountId]?.size || 0) * 0.8) {
         pool.query(
-          `INSERT INTO wa_sessions (account_id, key, value)
-           VALUES ($1, 'chats_cache', $2)
-           ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value`,
-          [accountId, json]
-        ).catch(() => {});
+          "SELECT value FROM wa_sessions WHERE account_id = $1 AND key = 'chats_cache'",
+          [accountId]
+        ).then(res => {
+          const existing = res.rows.length ? JSON.parse(res.rows[0].value) : [];
+          if (list.length >= existing.length) {
+            pool.query(
+              `INSERT INTO wa_sessions (account_id, key, value)
+               VALUES ($1, 'chats_cache', $2)
+               ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value`,
+              [accountId, JSON.stringify(list)]
+            ).catch(() => {});
+          }
+        }).catch(() => {});
       }
     }
   }
