@@ -7,14 +7,20 @@ const {
   DisconnectReason,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  useMultiFileAuthState,
   isJidGroup,
 } = require('@whiskeysockets/baileys');
 
 const { usePostgresAuthState } = require('./pgAuthState');
-const { pool }  = require('./db');
+const { pool, dbAvailable }  = require('./db');
 const { Boom }  = require('@hapi/boom');
 const pino      = require('pino');
 const qrcode    = require('qrcode');
+const path      = require('path');
+const fs        = require('fs');
+
+const SESSIONS_DIR = path.join(__dirname, '..', 'sessions');
+if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
 const clients     = {};
 const statuses    = {};
@@ -92,7 +98,18 @@ async function createClient(accountId, io) {
     error: undefined, reason: undefined,
   });
 
-  const { state, saveCreds, removeAll } = await usePostgresAuthState(accountId);
+  // Use Postgres if available, otherwise fall back to files
+  let state, saveCreds, removeAll;
+  if (dbAvailable) {
+    ({ state, saveCreds, removeAll } = await usePostgresAuthState(accountId));
+    console.log(`[WA] Using Postgres auth for ${accountId}`);
+  } else {
+    const dir = path.join(SESSIONS_DIR, `session-${accountId}`);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    ({ state, saveCreds } = await useMultiFileAuthState(dir));
+    removeAll = async () => fs.rmSync(dir, { recursive: true, force: true });
+    console.log(`[WA] Using file auth for ${accountId} (no DB)`);
+  }
   const version              = await getWAVersion();
 
   const sock = makeWASocket({
@@ -283,8 +300,12 @@ async function disconnectSession(accountId) {
     try { clients[accountId].end(undefined); } catch (_) {}
     delete clients[accountId];
   }
-  // Delete from Postgres
-  await pool.query('DELETE FROM wa_sessions WHERE account_id = $1', [accountId]).catch(() => {});
+  // Delete session from DB or files
+  if (dbAvailable && pool) {
+    await pool.query('DELETE FROM wa_sessions WHERE account_id = $1', [accountId]).catch(() => {});
+  }
+  const dir = path.join(SESSIONS_DIR, `session-${accountId}`);
+  if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
   delete chatMap[accountId];
   delete msgMap[accountId];
   delete contactMap[accountId];
@@ -318,15 +339,29 @@ async function getChatMessages(accountId, chatId, limit = 50) {
 function getStatuses() { return statuses; }
 
 async function getSavedSessionIds() {
-  try {
-    const res = await pool.query(
-      "SELECT DISTINCT account_id FROM wa_sessions WHERE key = 'creds'"
-    );
-    return res.rows.map(r => r.account_id);
-  } catch (e) {
-    console.error('[WA] getSavedSessionIds error:', e.message);
-    return [];
+  // Try Postgres first
+  if (dbAvailable && pool) {
+    try {
+      const res = await pool.query(
+        "SELECT DISTINCT account_id FROM wa_sessions WHERE key = 'creds'"
+      );
+      console.log('[WA] Loaded session IDs from Postgres');
+      return res.rows.map(r => r.account_id);
+    } catch (e) {
+      console.error('[WA] getSavedSessionIds DB error:', e.message);
+    }
   }
+  // Fall back to file system
+  console.log('[WA] Loading session IDs from files');
+  if (!fs.existsSync(SESSIONS_DIR)) return [];
+  return fs.readdirSync(SESSIONS_DIR)
+    .filter(d => {
+      if (!d.startsWith('session-')) return false;
+      const accountId = d.replace('session-', '');
+      if (/^\d+$/.test(accountId)) return false;
+      return fs.existsSync(path.join(SESSIONS_DIR, d, 'creds.json'));
+    })
+    .map(d => d.replace('session-', ''));
 }
 
 module.exports = {
