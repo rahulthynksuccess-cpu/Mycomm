@@ -63,8 +63,10 @@ function extractBody(msg) {
 
 function resolveName(accountId, jid, fallback) {
   const c = contactMap[accountId]?.get(jid);
-  // prefer saved name → push name → phone number
-  return (c?.name || c?.notify || fallback || phoneFromJid(jid) || jid).trim() || jid;
+  const phone = phoneFromJid(jid);
+  // If fallback looks like a JID, ignore it and use phone number instead
+  const safeFallback = (fallback && !fallback.includes('@')) ? fallback : null;
+  return (c?.name || c?.notify || safeFallback || phone || jid).trim() || jid;
 }
 
 function buildChatList(accountId, limit = 50) {
