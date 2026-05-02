@@ -100,23 +100,20 @@ async function createClient(accountId, io) {
     error: undefined, reason: undefined,
   });
 
-  // Always try Postgres first — wait up to 5s for DB to be ready
+  // Try Postgres auth — fall back to files only if DB is completely unavailable
   let state, saveCreds, removeAll;
-  let useDb = dbAvailable;
-  if (!useDb) {
-    // DB might still be connecting — wait and retry once
-    await new Promise(r => setTimeout(r, 3000));
-    useDb = dbAvailable;
-  }
-  if (useDb) {
+  try {
+    if (!pool) throw new Error('No pool');
+    // Test connection is alive
+    await pool.query('SELECT 1');
     ({ state, saveCreds, removeAll } = await usePostgresAuthState(accountId));
     console.log(`[WA] Using Postgres auth for ${accountId}`);
-  } else {
+  } catch (e) {
+    console.log(`[WA] Using file auth for ${accountId} (DB unavailable: ${e.message})`);
     const dir = path.join(SESSIONS_DIR, `session-${accountId}`);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     ({ state, saveCreds } = await useMultiFileAuthState(dir));
     removeAll = async () => fs.rmSync(dir, { recursive: true, force: true });
-    console.log(`[WA] Using file auth for ${accountId} (no DB)`);
   }
   const version              = await getWAVersion();
 
@@ -355,18 +352,19 @@ async function getChatMessages(accountId, chatId, limit = 50) {
 function getStatuses() { return statuses; }
 
 async function getSavedSessionIds() {
-  // Wait up to 5s for DB connection before reading sessions
-  if (!dbAvailable) await new Promise(r => setTimeout(r, 5000));
-  // Try Postgres first
-  if (dbAvailable && pool) {
-    try {
-      const res = await pool.query(
-        "SELECT DISTINCT account_id FROM wa_sessions WHERE key = 'creds'"
-      );
-      console.log('[WA] Loaded session IDs from Postgres');
-      return res.rows.map(r => r.account_id);
-    } catch (e) {
-      console.error('[WA] getSavedSessionIds DB error:', e.message);
+  // Try Postgres directly — retry for up to 10s
+  if (pool) {
+    for (let i = 0; i < 5; i++) {
+      try {
+        const res = await pool.query(
+          "SELECT DISTINCT account_id FROM wa_sessions WHERE key = 'creds'"
+        );
+        console.log('[WA] Loaded session IDs from Postgres:', res.rows.map(r => r.account_id));
+        return res.rows.map(r => r.account_id);
+      } catch (e) {
+        console.log(`[WA] DB not ready yet, retrying (${i+1}/5)...`);
+        await new Promise(r => setTimeout(r, 2000));
+      }
     }
   }
   // Fall back to file system
