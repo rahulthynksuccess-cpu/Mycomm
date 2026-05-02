@@ -98,9 +98,15 @@ async function createClient(accountId, io) {
     error: undefined, reason: undefined,
   });
 
-  // Use Postgres if available, otherwise fall back to files
+  // Always try Postgres first — wait up to 5s for DB to be ready
   let state, saveCreds, removeAll;
-  if (dbAvailable) {
+  let useDb = dbAvailable;
+  if (!useDb) {
+    // DB might still be connecting — wait and retry once
+    await new Promise(r => setTimeout(r, 3000));
+    useDb = dbAvailable;
+  }
+  if (useDb) {
     ({ state, saveCreds, removeAll } = await usePostgresAuthState(accountId));
     console.log(`[WA] Using Postgres auth for ${accountId}`);
   } else {
@@ -121,7 +127,7 @@ async function createClient(accountId, io) {
     },
     printQRInTerminal: false,
     browser: ['MyComms', 'Chrome', '10.0'],
-    syncFullHistory: false,
+    syncFullHistory: true,
     markOnlineOnConnect: true,
     connectTimeoutMs: 60_000,
     keepAliveIntervalMs: 25_000,
@@ -347,6 +353,8 @@ async function getChatMessages(accountId, chatId, limit = 50) {
 function getStatuses() { return statuses; }
 
 async function getSavedSessionIds() {
+  // Wait up to 5s for DB connection before reading sessions
+  if (!dbAvailable) await new Promise(r => setTimeout(r, 5000));
   // Try Postgres first
   if (dbAvailable && pool) {
     try {
