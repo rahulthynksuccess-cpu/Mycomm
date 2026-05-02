@@ -182,10 +182,11 @@ async function createClient(accountId, io) {
     for (const c of list) {
       if (!c.id) continue;
       const existing = contactMap[accountId].get(c.id) || {};
-      contactMap[accountId].set(c.id, {
-        name:   c.name   || existing.name   || '',
-        notify: c.notify || existing.notify || '',
-      });
+      const name   = c.name   || c.verifiedName || existing.name   || '';
+      const notify = c.notify || c.pushName     || existing.notify || '';
+      if (name || notify) {
+        contactMap[accountId].set(c.id, { name, notify });
+      }
     }
   }
 
@@ -325,7 +326,21 @@ async function getRecentChats(accountId, limit = 50) {
 }
 
 async function getChatMessages(accountId, chatId, limit = 50) {
-  const msgs = msgMap[accountId]?.get(chatId) || [];
+  let msgs = msgMap[accountId]?.get(chatId) || [];
+
+  // If no cached messages, fetch directly from WhatsApp
+  if (msgs.length === 0 && clients[accountId]) {
+    try {
+      const fetched = await clients[accountId].fetchMessagesFromWA(chatId, limit);
+      if (fetched?.length) {
+        msgMap[accountId].set(chatId, fetched);
+        msgs = fetched;
+      }
+    } catch (e) {
+      console.error('[WA] fetchMessagesFromWA failed:', e.message);
+    }
+  }
+
   return msgs.slice(-limit).map(m => ({
     id:        m.key.id,
     body:      extractBody(m),
