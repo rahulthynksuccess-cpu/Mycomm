@@ -169,20 +169,10 @@ async function createClient(accountId, io) {
       io.emit('wa:qr', { accountId, qr: null });
       emitStatus(io, accountId, { status: 'ready', phone, name });
 
-      // Wait for history sync events to arrive (messaging-history.set, chats.set)
-      // then push. Retry a few times to catch delayed events.
-      let pushed = false;
-      const tryPush = (delay) => setTimeout(() => {
-        const list = buildChatList(accountId);
-        if (list.length > 0) {
-          pushed = true;
-          pushChats();
-        }
-      }, delay);
-      tryPush(2000);
-      tryPush(5000);
-      tryPush(10000);
-      tryPush(20000);
+      // Push chats at intervals — history sync can take time
+      [2000, 5000, 10000, 20000].forEach(delay => {
+        setTimeout(() => pushChats(), delay);
+      });
     }
 
     if (connection === 'close') {
@@ -255,23 +245,20 @@ async function createClient(accountId, io) {
     const list = buildChatList(accountId);
     if (list.length > 0) {
       io.emit('wa:chats', { accountId, chats: list });
-      // Only save to DB if we have more chats than what's already cached
-      // This prevents a single incoming message from overwriting the full cache
-      if (pool && list.length >= (chatMap[accountId]?.size || 0) * 0.8) {
-        pool.query(
-          "SELECT value FROM wa_sessions WHERE account_id = $1 AND key = 'chats_cache'",
-          [accountId]
-        ).then(res => {
-          const existing = res.rows.length ? JSON.parse(res.rows[0].value) : [];
-          if (list.length >= existing.length) {
-            pool.query(
-              `INSERT INTO wa_sessions (account_id, key, value)
-               VALUES ($1, 'chats_cache', $2)
-               ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value`,
-              [accountId, JSON.stringify(list)]
-            ).catch(() => {});
-          }
-        }).catch(() => {});
+      // Save to DB — but only if this is the biggest list we've seen
+      // Use a per-account high-water mark to avoid overwriting with smaller lists
+      if (pool) {
+        if (!pushChats._hwm) pushChats._hwm = {};
+        const hwm = pushChats._hwm[accountId] || 0;
+        if (list.length >= hwm) {
+          pushChats._hwm[accountId] = list.length;
+          pool.query(
+            `INSERT INTO wa_sessions (account_id, key, value)
+             VALUES ($1, 'chats_cache', $2)
+             ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value`,
+            [accountId, JSON.stringify(list)]
+          ).catch(() => {});
+        }
       }
     }
   }
