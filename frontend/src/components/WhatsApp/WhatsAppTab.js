@@ -13,7 +13,8 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
   const [showQR,        setShowQR]        = useState(null);
   const [qrTimeout,     setQrTimeout]     = useState(false);
 
-  const messagesEndRef = useRef(null);
+  const messagesEndRef   = useRef(null);
+  const scrollContainerRef = useRef(null);
   const qrTimerRef     = useRef(null);
 
   // ── Merge server-pushed chats into local state ──────
@@ -115,10 +116,23 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
     }
   }, [realtimeMessages]);
 
-  // ── Scroll to bottom on new messages ─────────────────
+  // ── Scroll to bottom only if user is already near bottom ──
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    // Only auto-scroll if within 150px of bottom
+    if (distFromBottom < 150) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages]);
+
+  // ── Scroll to bottom when opening a new chat ──────────
+  useEffect(() => {
+    setTimeout(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
+    }, 100);
+  }, [activeChat?.id]);
 
   // ── Session management ───────────────────────────────
   async function startSession(accountId) {
@@ -356,7 +370,7 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
               </div>
 
               {/* Messages */}
-              <div className="panel-scroll" style={{ background: 'var(--bg)' }}>
+              <div className="panel-scroll" ref={scrollContainerRef} style={{ background: 'var(--bg)' }}>
                 <div className="bubble-wrap">
                   {loading && (
                     <div style={{ color: 'var(--text3)', textAlign: 'center', fontSize: 13, padding: 20 }}>

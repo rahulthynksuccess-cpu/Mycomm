@@ -54,10 +54,29 @@ function phoneFromJid(jid = '') {
 }
 
 function extractBody(msg) {
-  return msg?.message?.conversation
-    || msg?.message?.extendedTextMessage?.text
-    || msg?.message?.imageMessage?.caption
-    || msg?.message?.videoMessage?.caption
+  const m = msg?.message;
+  if (!m) return '';
+  return m.conversation
+    || m.extendedTextMessage?.text
+    || m.imageMessage?.caption
+    || m.videoMessage?.caption
+    || m.documentMessage?.caption
+    || m.audioMessage && '🎵 Audio'
+    || m.stickerMessage && '🎨 Sticker'
+    || m.locationMessage && '📍 Location'
+    || m.contactMessage?.displayName && `👤 ${m.contactMessage.displayName}`
+    || m.templateMessage?.hydratedTemplate?.hydratedContentText
+    || m.templateMessage?.hydratedTemplate?.hydratedTitleText
+    || m.templateMessage && '📋 Template message'
+    || m.interactiveMessage?.body?.text
+    || m.interactiveMessage?.header?.text
+    || m.interactiveMessage && '📋 Interactive message'
+    || m.buttonsMessage?.contentText
+    || m.listMessage?.description
+    || m.reactionMessage && `${m.reactionMessage.text || '👍'} Reaction`
+    || m.pollCreationMessage?.name && `📊 Poll: ${m.pollCreationMessage.name}`
+    || m.ephemeralMessage && extractBody({ message: m.ephemeralMessage.message })
+    || m.viewOnceMessage && extractBody({ message: m.viewOnceMessage.message })
     || '';
 }
 
@@ -246,7 +265,7 @@ async function createClient(accountId, io) {
       if (!msgMap[accountId].has(jid)) msgMap[accountId].set(jid, []);
       const arr = msgMap[accountId].get(jid);
       arr.push(msg);
-      if (arr.length > 200) arr.splice(0, arr.length - 200);
+      if (arr.length > 1000) arr.splice(0, arr.length - 1000);
 
       // update chat preview
       const existing = chatMap[accountId].get(jid) || { id: jid };
@@ -334,7 +353,7 @@ async function getRecentChats(accountId, limit = 50) {
   return buildChatList(accountId, limit);
 }
 
-async function getChatMessages(accountId, chatId, limit = 50) {
+async function getChatMessages(accountId, chatId, limit = 200) {
   let msgs = msgMap[accountId]?.get(chatId) || [];
 
 

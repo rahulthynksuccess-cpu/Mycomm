@@ -36,8 +36,8 @@ export const waAPI = {
   getStatus: () => api.get('/api/whatsapp/status').then(r => r.data),
   addSession: (accountId) => api.post('/api/whatsapp/sessions', { accountId }).then(r => r.data),
   removeSession: (accountId) => api.delete(`/api/whatsapp/sessions/${accountId}`).then(r => r.data),
-  getChats: (accountId, limit = 50) => api.get(`/api/whatsapp/${accountId}/chats`, { params: { limit } }).then(r => r.data),
-  getMessages: (accountId, chatId, limit = 50) => api.get(`/api/whatsapp/${accountId}/chats/${encodeURIComponent(chatId)}/messages`, { params: { limit } }).then(r => r.data),
+  getChats: (accountId, limit = 100) => api.get(`/api/whatsapp/${accountId}/chats`, { params: { limit } }).then(r => r.data),
+  getMessages: (accountId, chatId, limit = 200) => api.get(`/api/whatsapp/${accountId}/chats/${encodeURIComponent(chatId)}/messages`, { params: { limit } }).then(r => r.data),
   send: (accountId, to, body) => api.post(`/api/whatsapp/${accountId}/send`, { to, body }).then(r => r.data),
 };
 
