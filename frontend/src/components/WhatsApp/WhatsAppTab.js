@@ -13,8 +13,9 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
   const [showQR,        setShowQR]        = useState(null);
   const [qrTimeout,     setQrTimeout]     = useState(false);
 
-  const messagesEndRef   = useRef(null);
+  const messagesEndRef     = useRef(null);
   const scrollContainerRef = useRef(null);
+  const [msgLimit, setMsgLimit] = useState(200);
   const qrTimerRef     = useRef(null);
 
   // ── Merge server-pushed chats into local state ──────
@@ -116,6 +117,19 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
     }
   }, [realtimeMessages]);
 
+  // ── Load more messages when scrolling to top ────────
+  const handleScroll = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    if (container.scrollTop < 50 && activeChat && activeAccount) {
+      const newLimit = msgLimit + 100;
+      setMsgLimit(newLimit);
+      waAPI.getMessages(activeAccount, activeChat.id, newLimit)
+        .then(msgs => { if (msgs?.length) setMessages(msgs); })
+        .catch(() => {});
+    }
+  }, [activeChat, activeAccount, msgLimit]);
+
   // ── Scroll to bottom only if user is already near bottom ──
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -181,6 +195,7 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
   async function openChat(chat) {
     setActiveChat(chat);
     setMessages([]);
+    setMsgLimit(200);
     setLoading(true);
     try {
       const msgs = await waAPI.getMessages(activeAccount, chat.id);
@@ -322,7 +337,7 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
                       fontWeight: chat.unreadCount ? 600 : 400,
                       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 160,
                     }}>
-                      {chat.name}
+                      {chat.name?.includes('@') ? chat.name.split('@')[0].split(':')[0].replace(/[^0-9]/g,'') : chat.name}
                     </span>
                     <span style={{ fontSize: 11, color: 'var(--text3)', flexShrink: 0 }}>
                       {fmtTime(chat.lastMessageTime)}
@@ -362,7 +377,11 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
                   {activeChat.isGroup ? '👥' : initials(activeChat.name)}
                 </div>
                 <div>
-                  <div style={{ fontWeight: 600 }}>{activeChat.name}</div>
+                  <div style={{ fontWeight: 600 }}>
+                    {activeChat.name?.includes('@') 
+                      ? activeChat.name.split('@')[0].split(':')[0].replace(/[^0-9]/g,'')
+                      : activeChat.name}
+                  </div>
                   <div style={{ fontSize: 12, color: 'var(--text3)' }}>
                     {activeChat.isGroup ? 'Group · ' : ''}{activeAccount}
                   </div>
@@ -370,7 +389,7 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
               </div>
 
               {/* Messages */}
-              <div className="panel-scroll" ref={scrollContainerRef} style={{ background: 'var(--bg)' }}>
+              <div className="panel-scroll" ref={scrollContainerRef} onScroll={handleScroll} style={{ background: 'var(--bg)' }}>
                 <div className="bubble-wrap">
                   {loading && (
                     <div style={{ color: 'var(--text3)', textAlign: 'center', fontSize: 13, padding: 20 }}>
@@ -382,7 +401,7 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
                       No messages
                     </div>
                   )}
-                  {messages.map((m, i) => (
+                  {messages.filter(m => m.type !== 'protocolMessage' && m.type !== 'senderKeyDistributionMessage' && (m.body || m.type === 'chat')).map((m, i) => (
                     <div key={m.id || i} className={`bubble-row ${m.fromMe ? 'me' : ''}`}>
                       {!m.fromMe && (
                         <div className="avatar avatar-sm" style={{ background: strColor(activeChat.name) }}>
@@ -412,6 +431,14 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
                     rows={2}
                   />
                   <div className="compose-toolbar">
+                    <label title="Attach file" style={{ cursor: 'pointer', padding: '6px 8px', color: 'var(--text3)', fontSize: 18, lineHeight: 1 }}>
+                      📎
+                      <input type="file" style={{ display: 'none' }} onChange={e => {
+                        const file = e.target.files[0];
+                        if (file) alert('File sending coming soon: ' + file.name);
+                        e.target.value = '';
+                      }} />
+                    </label>
                     <button className="btn btn-primary" style={{ marginLeft: 'auto' }} onClick={sendMessage}>
                       Send ➤
                     </button>

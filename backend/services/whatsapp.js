@@ -298,10 +298,19 @@ async function createClient(accountId, io) {
   });
 
   // ── Incoming messages ──────────────────────────────
+  // Message types that are internal WhatsApp protocol — never show to user
+  const SKIP_TYPES = new Set([
+    'protocolMessage', 'senderKeyDistributionMessage', 'messageContextInfo',
+    'appStateSyncKeyShare', 'reaction', 'pollUpdateMessage',
+  ]);
+
   sock.ev.on('messages.upsert', ({ messages: msgs, type }) => {
     for (const msg of msgs) {
       const jid = msg.key.remoteJid || '';
       if (!jid) continue;
+      // Skip protocol/system messages
+      const msgType = Object.keys(msg.message || {})[0];
+      if (!msg.message || SKIP_TYPES.has(msgType)) continue;
 
       // store message
       if (!msgMap[accountId].has(jid)) msgMap[accountId].set(jid, []);
