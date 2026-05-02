@@ -234,6 +234,7 @@ async function createClient(accountId, io) {
 
   sock.ev.on('chats.upsert', (cs) => { storeChats(cs); pushChats(); });
   sock.ev.on('chats.update', (cs) => { storeChats(cs); pushChats(); });
+  sock.ev.on('chats.set',    (cs) => { storeChats(cs.chats || []); pushChats(); });
 
   // ── History sync: contacts FIRST then chats ────────
   sock.ev.on('messaging-history.set', ({ chats: hc, contacts: hct, messages: hm }) => {
@@ -373,7 +374,7 @@ function getStatuses() { return statuses; }
 async function getSavedSessionIds() {
   // Try Postgres directly — retry for up to 10s
   if (pool) {
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 10; i++) {
       try {
         const res = await pool.query(
           "SELECT DISTINCT account_id FROM wa_sessions WHERE key = 'creds'"
@@ -381,8 +382,8 @@ async function getSavedSessionIds() {
         console.log('[WA] Loaded session IDs from Postgres:', res.rows.map(r => r.account_id));
         return res.rows.map(r => r.account_id);
       } catch (e) {
-        console.log(`[WA] DB not ready yet, retrying (${i+1}/5)...`);
-        await new Promise(r => setTimeout(r, 2000));
+        console.log(`[WA] DB not ready yet, retrying (${i+1}/10)...`);
+        await new Promise(r => setTimeout(r, 3000));
       }
     }
   }
