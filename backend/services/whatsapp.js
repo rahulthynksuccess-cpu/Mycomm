@@ -168,8 +168,21 @@ async function createClient(accountId, io) {
       console.log(`[WA] ${accountId} ready — ${phone}`);
       io.emit('wa:qr', { accountId, qr: null });
       emitStatus(io, accountId, { status: 'ready', phone, name });
-      // Push chats after 3s to allow history sync + contacts to arrive
-      setTimeout(() => pushChats(), 3000);
+
+      // Wait for history sync events to arrive (messaging-history.set, chats.set)
+      // then push. Retry a few times to catch delayed events.
+      let pushed = false;
+      const tryPush = (delay) => setTimeout(() => {
+        const list = buildChatList(accountId);
+        if (list.length > 0) {
+          pushed = true;
+          pushChats();
+        }
+      }, delay);
+      tryPush(2000);
+      tryPush(5000);
+      tryPush(10000);
+      tryPush(20000);
     }
 
     if (connection === 'close') {
