@@ -362,10 +362,34 @@ function getStatuses() { return statuses; }
 
 function getSavedSessionIds() {
   if (!fs.existsSync(SESSIONS_DIR)) return [];
-  return fs.readdirSync(SESSIONS_DIR)
+
+  const dirs = fs.readdirSync(SESSIONS_DIR)
     .filter(d => d.startsWith('session-')
-      && fs.statSync(path.join(SESSIONS_DIR, d)).isDirectory())
-    .map(d => d.replace('session-', ''));
+      && fs.statSync(path.join(SESSIONS_DIR, d)).isDirectory());
+
+  const valid = [];
+  for (const d of dirs) {
+    const accountId = d.replace('session-', '');
+
+    // Skip pure-numeric IDs — these are leftover from old whatsapp-web.js sessions
+    if (/^\d+$/.test(accountId)) {
+      console.log('[WA] Removing stale numeric session:', d);
+      fs.rmSync(path.join(SESSIONS_DIR, d), { recursive: true, force: true });
+      continue;
+    }
+
+    // Must contain creds.json to be a valid Baileys session
+    const credsFile = path.join(SESSIONS_DIR, d, 'creds.json');
+    if (!fs.existsSync(credsFile)) {
+      console.log('[WA] Removing empty session dir:', d);
+      fs.rmSync(path.join(SESSIONS_DIR, d), { recursive: true, force: true });
+      continue;
+    }
+
+    valid.push(accountId);
+  }
+
+  return valid;
 }
 
 module.exports = {
