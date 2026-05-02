@@ -242,7 +242,35 @@ async function createClient(accountId, io) {
 
   function pushChats() {
     const list = buildChatList(accountId);
-    if (list.length > 0) io.emit('wa:chats', { accountId, chats: list });
+    if (list.length > 0) {
+      io.emit('wa:chats', { accountId, chats: list });
+      // Persist to DB so chats survive restarts
+      if (pool) {
+        const json = JSON.stringify(list);
+        pool.query(
+          `INSERT INTO wa_sessions (account_id, key, value)
+           VALUES ($1, 'chats_cache', $2)
+           ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value`,
+          [accountId, json]
+        ).catch(() => {});
+      }
+    }
+  }
+
+  // Load chats from DB cache immediately on start
+  if (pool) {
+    pool.query(
+      "SELECT value FROM wa_sessions WHERE account_id = $1 AND key = 'chats_cache'",
+      [accountId]
+    ).then(res => {
+      if (res.rows.length) {
+        const cached = JSON.parse(res.rows[0].value);
+        if (cached?.length) {
+          io.emit('wa:chats', { accountId, chats: cached });
+          console.log(`[WA] Loaded ${cached.length} chats from DB cache for ${accountId}`);
+        }
+      }
+    }).catch(() => {});
   }
 
   sock.ev.on('chats.upsert', (cs) => { storeChats(cs); pushChats(); });
