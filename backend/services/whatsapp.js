@@ -17,16 +17,14 @@ const path     = require('path');
 const fs       = require('fs');
 const qrcode   = require('qrcode');
 
-// ── State ──────────────────────────────────────────────
-const clients     = {};   // accountId → socket
-const statuses    = {};   // accountId → { status, phone, name, error, reason }
-const chatMap     = {};   // accountId → Map<chatId, chatObj>
-const msgMap      = {};   // accountId → Map<chatId, message[]>
-const contactMap  = {};   // accountId → Map<jid, { name, notify }>
+const clients     = {};
+const statuses    = {};
+const chatMap     = {};
+const msgMap      = {};
+const contactMap  = {};
 
 const MAX_ACCOUNTS = parseInt(process.env.WA_MAX_ACCOUNTS || '5');
 const SESSIONS_DIR = path.join(__dirname, '..', 'sessions');
-
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
 const logger = pino({ level: 'silent' });
@@ -36,12 +34,10 @@ async function getWAVersion() {
   if (!_waVersion) {
     const { version } = await fetchLatestBaileysVersion();
     _waVersion = version;
-    console.log('[WA] Version:', version.join('.'));
   }
   return _waVersion;
 }
 
-// ── Helpers ────────────────────────────────────────────
 function sessionDir(accountId) {
   const d = path.join(SESSIONS_DIR, `session-${accountId}`);
   if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
@@ -65,15 +61,15 @@ function extractBody(msg) {
     || '';
 }
 
-// Resolve best display name for a JID
-function resolveName(accountId, jid, fallbackPushName) {
-  const contact = contactMap[accountId]?.get(jid);
-  return contact?.name || contact?.notify || fallbackPushName || phoneFromJid(jid) || jid;
+function resolveName(accountId, jid, fallback) {
+  const c = contactMap[accountId]?.get(jid);
+  // prefer saved name → push name → phone number
+  return (c?.name || c?.notify || fallback || phoneFromJid(jid) || jid).trim() || jid;
 }
 
 function buildChatList(accountId, limit = 50) {
   const map = chatMap[accountId];
-  if (!map) return [];
+  if (!map || map.size === 0) return [];
   return [...map.values()]
     .sort((a, b) => (Number(b.conversationTimestamp) || 0) - (Number(a.conversationTimestamp) || 0))
     .slice(0, limit)
@@ -87,7 +83,6 @@ function buildChatList(accountId, limit = 50) {
     }));
 }
 
-// ── Core ───────────────────────────────────────────────
 async function createClient(accountId, io) {
   if (clients[accountId]) {
     try { clients[accountId].end(undefined); } catch (_) {}
@@ -123,7 +118,6 @@ async function createClient(accountId, io) {
 
   clients[accountId] = sock;
 
-  // ── Connection ─────────────────────────────────────
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
@@ -147,7 +141,6 @@ async function createClient(accountId, io) {
       const loggedOut  = statusCode === DisconnectReason.loggedOut;
       const badSession = statusCode === DisconnectReason.badSession;
 
-      console.log(`[WA] ${accountId} closed — code ${statusCode}`);
       delete clients[accountId];
 
       if (loggedOut || badSession) {
@@ -171,121 +164,93 @@ async function createClient(accountId, io) {
 
   sock.ev.on('creds.update', saveCreds);
 
-  // ── Contacts — store name + notify for display ─────
-  sock.ev.on('contacts.upsert', (contacts) => {
-    for (const c of contacts) {
+  // ── Contacts: build name map ───────────────────────
+  function storeContacts(list = []) {
+    for (const c of list) {
       if (!c.id) continue;
+      const existing = contactMap[accountId].get(c.id) || {};
       contactMap[accountId].set(c.id, {
-        name:   c.name   || '',
-        notify: c.notify || '',
+        name:   c.name   || existing.name   || '',
+        notify: c.notify || existing.notify || '',
       });
     }
-    // Re-push chat list so names update immediately
-    const list = buildChatList(accountId);
-    if (list.length > 0) io.emit('wa:chats', { accountId, chats: list });
-  });
+  }
 
-  sock.ev.on('contacts.update', (updates) => {
-    for (const u of updates) {
-      if (!u.id) continue;
-      const existing = contactMap[accountId].get(u.id) || {};
-      contactMap[accountId].set(u.id, { ...existing, ...u });
-    }
-    const list = buildChatList(accountId);
-    if (list.length > 0) io.emit('wa:chats', { accountId, chats: list });
-  });
+  sock.ev.on('contacts.upsert',  (cs) => { storeContacts(cs); pushChats(); });
+  sock.ev.on('contacts.update',  (cs) => { storeContacts(cs); pushChats(); });
 
   // ── Chats ──────────────────────────────────────────
-  sock.ev.on('chats.upsert', (newChats) => {
-    for (const chat of newChats) {
+  function storeChats(list = []) {
+    for (const chat of list) {
       chatMap[accountId].set(chat.id, {
         ...chatMap[accountId].get(chat.id),
         ...chat,
       });
     }
+  }
+
+  function pushChats() {
     const list = buildChatList(accountId);
     if (list.length > 0) io.emit('wa:chats', { accountId, chats: list });
-  });
+  }
 
-  sock.ev.on('chats.update', (updates) => {
-    for (const u of updates) {
-      const existing = chatMap[accountId].get(u.id) || {};
-      chatMap[accountId].set(u.id, { ...existing, ...u });
-    }
-    const list = buildChatList(accountId);
-    if (list.length > 0) io.emit('wa:chats', { accountId, chats: list });
-  });
+  sock.ev.on('chats.upsert', (cs) => { storeChats(cs); pushChats(); });
+  sock.ev.on('chats.update', (cs) => { storeChats(cs); pushChats(); });
 
-  // ── History sync — fires on first connect with recent chats+messages ──
-  sock.ev.on('messaging-history.set', ({ chats: histChats, contacts: histContacts, messages: histMessages }) => {
-    // Load contacts first so names resolve correctly
-    if (histContacts) {
-      for (const c of histContacts) {
-        if (!c.id) continue;
-        contactMap[accountId].set(c.id, { name: c.name || '', notify: c.notify || '' });
-      }
-    }
-    // Load chats
-    if (histChats) {
-      for (const chat of histChats) {
-        chatMap[accountId].set(chat.id, {
-          ...chatMap[accountId].get(chat.id),
-          ...chat,
-        });
-      }
-    }
-    // Load messages into msgMap
-    if (histMessages) {
-      for (const msg of histMessages) {
+  // ── History sync: contacts FIRST then chats ────────
+  sock.ev.on('messaging-history.set', ({ chats: hc, contacts: hct, messages: hm, isLatest }) => {
+    // 1. contacts first so resolveName works when we push chats
+    if (hct?.length) storeContacts(hct);
+    // 2. chats
+    if (hc?.length)  storeChats(hc);
+    // 3. messages
+    if (hm?.length) {
+      for (const msg of hm) {
         const jid = msg.key?.remoteJid;
         if (!jid) continue;
         if (!msgMap[accountId].has(jid)) msgMap[accountId].set(jid, []);
         msgMap[accountId].get(jid).push(msg);
       }
     }
-    const list = buildChatList(accountId);
-    if (list.length > 0) io.emit('wa:chats', { accountId, chats: list });
+    pushChats();
   });
 
-  // ── Messages ───────────────────────────────────────
+  // ── Incoming messages ──────────────────────────────
   sock.ev.on('messages.upsert', ({ messages: msgs, type }) => {
     for (const msg of msgs) {
       const jid = msg.key.remoteJid || '';
       if (!jid) continue;
 
-      // Store in msgMap
+      // store message
       if (!msgMap[accountId].has(jid)) msgMap[accountId].set(jid, []);
       const arr = msgMap[accountId].get(jid);
       arr.push(msg);
       if (arr.length > 200) arr.splice(0, arr.length - 200);
 
-      // Update chat entry with latest message info
-      const chat = chatMap[accountId].get(jid) || { id: jid };
+      // update chat preview
+      const existing = chatMap[accountId].get(jid) || { id: jid };
       chatMap[accountId].set(jid, {
-        ...chat,
+        ...existing,
         conversationTimestamp: msg.messageTimestamp,
         lastMessage: extractBody(msg),
       });
 
-      // Also store pushName in contactMap if we don't have a name yet
+      // cache pushName if we have no better name
       if (msg.pushName) {
-        const existing = contactMap[accountId].get(jid) || {};
-        if (!existing.name && !existing.notify) {
-          contactMap[accountId].set(jid, { ...existing, notify: msg.pushName });
+        const ec = contactMap[accountId].get(jid) || {};
+        if (!ec.name && !ec.notify) {
+          contactMap[accountId].set(jid, { ...ec, notify: msg.pushName });
         }
       }
 
-      // Emit incoming message to frontend
       if (type === 'notify' && !msg.key.fromMe) {
-        const body     = extractBody(msg);
-        const fromName = resolveName(accountId, jid, msg.pushName);
         io.emit('wa:message', {
           accountId,
           id:          msg.key.id,
           chatId:      jid,
-          from:        fromName,
+          from:        resolveName(accountId, jid, msg.pushName),
           fromNumber:  jid,
-          body,
+          body:        extractBody(msg),
           type:        Object.keys(msg.message || {})[0] || 'unknown',
           timestamp:   Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
           isGroup:     isJidGroup(jid),
@@ -293,9 +258,7 @@ async function createClient(accountId, io) {
           hasMedia:    !!(msg.message?.imageMessage || msg.message?.videoMessage
                         || msg.message?.audioMessage || msg.message?.documentMessage),
         });
-
-        const list = buildChatList(accountId);
-        if (list.length > 0) io.emit('wa:chats', { accountId, chats: list });
+        pushChats();
       }
     }
   });
@@ -304,7 +267,7 @@ async function createClient(accountId, io) {
 // ── Public API ─────────────────────────────────────────
 
 async function initWhatsApp(io) {
-  await getWAVersion().catch(e => console.error('[WA] Version fetch failed:', e.message));
+  await getWAVersion().catch(() => {});
   const saved = getSavedSessionIds();
   console.log('[WA] Restoring sessions:', saved);
   for (let i = 0; i < saved.length; i++) {
@@ -362,28 +325,19 @@ function getStatuses() { return statuses; }
 
 function getSavedSessionIds() {
   if (!fs.existsSync(SESSIONS_DIR)) return [];
-
-  // Wipe EVERYTHING that is not a valid Baileys session
-  // This cleans up old whatsapp-web.js numeric folders (0, 1, 2...)
-  // AND old session-0, session-1 style folders
   const allEntries = fs.readdirSync(SESSIONS_DIR);
   for (const entry of allEntries) {
     const fullPath = path.join(SESSIONS_DIR, entry);
     if (!fs.statSync(fullPath).isDirectory()) continue;
-
-    // Valid Baileys session = starts with 'session-', non-numeric id, has creds.json
     const isBaileysDir = entry.startsWith('session-');
     const accountId    = isBaileysDir ? entry.replace('session-', '') : null;
     const isNumeric    = !accountId || /^\d+$/.test(accountId);
     const hasCreds     = isBaileysDir && fs.existsSync(path.join(fullPath, 'creds.json'));
-
     if (!isBaileysDir || isNumeric || !hasCreds) {
-      console.log('[WA] Purging invalid session dir:', entry);
+      console.log('[WA] Purging invalid session:', entry);
       fs.rmSync(fullPath, { recursive: true, force: true });
     }
   }
-
-  // Now only valid sessions remain
   return fs.readdirSync(SESSIONS_DIR)
     .filter(d => d.startsWith('session-')
       && fs.statSync(path.join(SESSIONS_DIR, d)).isDirectory()

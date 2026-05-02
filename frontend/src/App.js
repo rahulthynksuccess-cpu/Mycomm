@@ -11,12 +11,12 @@ const SOCKET_URL = process.env.REACT_APP_API_URL ||
   (process.env.NODE_ENV === 'production' ? window.location.origin : 'http://localhost:4000');
 
 export default function App() {
-  const [activeTab,    setActiveTab]    = useState('whatsapp');
+  const [activeTab,     setActiveTab]     = useState('whatsapp');
   const [notifications, setNotifications] = useState([]);
-  const [waStatuses,   setWaStatuses]   = useState({});
-  const [waMessages,   setWaMessages]   = useState([]);
-  const [waQRs,        setWaQRs]        = useState({});
-  const [waChats,      setWaChats]      = useState({});  // accountId → chat[]
+  const [waStatuses,    setWaStatuses]    = useState({});
+  const [waMessages,    setWaMessages]    = useState([]);
+  const [waQRs,         setWaQRs]         = useState({});
+  const [waChats,       setWaChats]       = useState({});
   const socketRef = useRef(null);
 
   const addNotification = useCallback((type, text) => {
@@ -25,17 +25,7 @@ export default function App() {
     setTimeout(() => setNotifications(prev => prev.filter(n => n.id !== id)), 4000);
   }, []);
 
-  // Merge incoming status — NEVER replace the whole object.
-  // This prevents HTTP snapshots from wiping real-time socket updates.
-  const mergeStatus = useCallback((accountId, fields) => {
-    setWaStatuses(prev => ({
-      ...prev,
-      [accountId]: { ...(prev[accountId] || {}), ...fields },
-    }));
-  }, []);
-
   useEffect(() => {
-    // ── Socket setup ───────────────────────────────────
     const socket = io(SOCKET_URL, {
       transports: ['websocket', 'polling'],
       reconnectionDelay: 1000,
@@ -45,21 +35,27 @@ export default function App() {
 
     socket.on('connect', () => {
       console.log('[socket] connected');
-      // On (re)connect, also do a fresh HTTP fetch as a belt-and-suspenders backup
+      // On reconnect, fetch status ONLY to learn about accounts we don't know yet
+      // Never overwrite existing socket state
       waAPI.getStatus().then(data => {
         if (!data || !Object.keys(data).length) return;
-        // Only add accounts we don't already know about
         setWaStatuses(prev => {
-          const merged = { ...data };
-          // Existing real-time data wins over the HTTP snapshot
-          Object.keys(prev).forEach(id => { merged[id] = prev[id]; });
-          return merged;
+          const next = { ...prev };
+          for (const [id, s] of Object.entries(data)) {
+            // Only add accounts not already tracked — never overwrite
+            if (!next[id]) next[id] = s;
+          }
+          return next;
         });
       }).catch(() => {});
     });
 
     socket.on('wa:status', ({ accountId, status, phone, name, error, reason }) => {
-      mergeStatus(accountId, { status, phone, name, error, reason });
+      // Always merge, never replace the whole map
+      setWaStatuses(prev => ({
+        ...prev,
+        [accountId]: { ...(prev[accountId] || {}), status, phone, name, error, reason },
+      }));
       if (status === 'ready') {
         setWaQRs(prev => { const n = { ...prev }; delete n[accountId]; return n; });
         addNotification('success', `WhatsApp ${name || accountId} connected ✓`);
@@ -68,14 +64,12 @@ export default function App() {
 
     socket.on('wa:qr', ({ accountId, qr }) => {
       if (!qr) {
-        // null qr = account connected, clear QR
         setWaQRs(prev => { const n = { ...prev }; delete n[accountId]; return n; });
       } else {
         setWaQRs(prev => ({ ...prev, [accountId]: qr }));
       }
     });
 
-    // Backend pushes chats when an account becomes ready
     socket.on('wa:chats', ({ accountId, chats }) => {
       if (Array.isArray(chats) && chats.length > 0) {
         setWaChats(prev => ({ ...prev, [accountId]: chats }));
@@ -86,7 +80,6 @@ export default function App() {
       setWaMessages(prev => [msg, ...prev.slice(0, 499)]);
     });
 
-    // Cleanup
     return () => socket.disconnect();
   }, []);
 

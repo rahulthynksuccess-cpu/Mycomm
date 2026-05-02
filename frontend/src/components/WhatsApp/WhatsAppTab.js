@@ -16,12 +16,18 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
   const messagesEndRef = useRef(null);
   const qrTimerRef     = useRef(null);
 
-  // ── Merge server-pushed chats (from wa:chats socket event via App.js) ──
+  // ── Merge server-pushed chats into local state ──────
   useEffect(() => {
     if (!pushedChats || !Object.keys(pushedChats).length) return;
-    setChats(prev => ({ ...prev, ...pushedChats }));
-    // Clear pushed chats from parent after merging
-    if (setPushedChats) setPushedChats({});
+    setChats(prev => {
+      const next = { ...prev };
+      for (const [id, chatList] of Object.entries(pushedChats)) {
+        if (Array.isArray(chatList) && chatList.length > 0) {
+          next[id] = chatList;
+        }
+      }
+      return next;
+    });
   }, [pushedChats]);
 
   // ── Derived ──────────────────────────────────────────
@@ -44,14 +50,12 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
     }
   }, []);
 
-  // ── Auto-select first ready account ──────────────────
+  // ── Auto-select first ready account (only when none selected) ──
   useEffect(() => {
+    if (activeAccount) return;  // already have one, don't interfere
     if (readyAccounts.length === 0) return;
-    // If current active account got disconnected, switch to first ready one
-    if (!activeAccount || statuses[activeAccount]?.status !== 'ready') {
-      setActiveAccount(readyAccounts[0][0]);
-    }
-  }, [statuses]);
+    setActiveAccount(readyAccounts[0][0]);
+  }, [readyAccounts.length]);
 
   // ── Load chats whenever active account changes ───────
   // Depends only on activeAccount so switching always triggers a fresh load.
