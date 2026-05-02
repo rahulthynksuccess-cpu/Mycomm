@@ -218,9 +218,13 @@ async function createClient(accountId, io) {
     if (hm?.length) {
       for (const msg of hm) {
         const jid = msg.key?.remoteJid;
-        if (!jid) continue;
+        if (!jid || !msg.message) continue;
         if (!msgMap[accountId].has(jid)) msgMap[accountId].set(jid, []);
         msgMap[accountId].get(jid).push(msg);
+      }
+      // Sort each chat's messages by timestamp
+      for (const [jid, msgs] of msgMap[accountId]) {
+        msgs.sort((a, b) => Number(a.messageTimestamp) - Number(b.messageTimestamp));
       }
     }
     // Wait 2s for any trailing contacts.upsert events before pushing
@@ -328,18 +332,7 @@ async function getRecentChats(accountId, limit = 50) {
 async function getChatMessages(accountId, chatId, limit = 50) {
   let msgs = msgMap[accountId]?.get(chatId) || [];
 
-  // If no cached messages, fetch directly from WhatsApp
-  if (msgs.length === 0 && clients[accountId]) {
-    try {
-      const fetched = await clients[accountId].fetchMessagesFromWA(chatId, limit);
-      if (fetched?.length) {
-        msgMap[accountId].set(chatId, fetched);
-        msgs = fetched;
-      }
-    } catch (e) {
-      console.error('[WA] fetchMessagesFromWA failed:', e.message);
-    }
-  }
+
 
   return msgs.slice(-limit).map(m => ({
     id:        m.key.id,
