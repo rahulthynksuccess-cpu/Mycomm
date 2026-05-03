@@ -83,9 +83,13 @@ function extractBody(msg) {
 function resolveName(accountId, jid, fallback) {
   const c = contactMap[accountId]?.get(jid);
   const phone = phoneFromJid(jid);
-  // If fallback looks like a JID, ignore it and use phone number instead
-  const safeFallback = (fallback && !fallback.includes('@')) ? fallback : null;
-  return (c?.name || c?.notify || safeFallback || phone || jid).trim() || jid;
+  // Ignore any fallback that looks like a JID
+  const safeFallback = (fallback && !fallback.includes('@') && !fallback.includes(':')) ? fallback.trim() : null;
+  const name = c?.name || c?.notify || safeFallback;
+  // Return name if it looks like a real name (not just digits)
+  if (name && !/^\d+$/.test(name)) return name;
+  // Fall back to phone number
+  return phone || jid;
 }
 
 function buildChatList(accountId, limit = 50) {
@@ -245,20 +249,15 @@ async function createClient(accountId, io) {
     const list = buildChatList(accountId);
     if (list.length > 0) {
       io.emit('wa:chats', { accountId, chats: list });
-      // Save to DB — but only if this is the biggest list we've seen
-      // Use a per-account high-water mark to avoid overwriting with smaller lists
-      if (pool) {
-        if (!pushChats._hwm) pushChats._hwm = {};
-        const hwm = pushChats._hwm[accountId] || 0;
-        if (list.length >= hwm) {
-          pushChats._hwm[accountId] = list.length;
-          pool.query(
-            `INSERT INTO wa_sessions (account_id, key, value)
-             VALUES ($1, 'chats_cache', $2)
-             ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value`,
-            [accountId, JSON.stringify(list)]
-          ).catch(() => {});
-        }
+      // Save to DB cache — only when list has meaningful size (>5 chats)
+      // This prevents a single new message from overwriting the full cache with 1 chat
+      if (pool && list.length > 5) {
+        pool.query(
+          `INSERT INTO wa_sessions (account_id, key, value)
+           VALUES ($1, 'chats_cache', $2)
+           ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value`,
+          [accountId, JSON.stringify(list)]
+        ).catch(() => {});
       }
     }
   }

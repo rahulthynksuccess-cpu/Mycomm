@@ -204,6 +204,13 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
     setMessages([]);
     setMsgLimit(200);
     setLoading(true);
+    // Clear unread badge immediately on open
+    setChats(prev => ({
+      ...prev,
+      [activeAccount]: (prev[activeAccount] || []).map(c =>
+        c.id === chat.id ? { ...c, unreadCount: 0 } : c
+      ),
+    }));
     try {
       const msgs = await waAPI.getMessages(activeAccount, chat.id);
       setMessages(msgs);
@@ -419,7 +426,7 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
                         <div className={`bubble ${m.fromMe ? 'me' : 'them'}`}>
                           {m.body || <em style={{ opacity: 0.5 }}>[{m.type}]</em>}
                         </div>
-                        <div className="bubble-time">{fmtTime(m.timestamp)}</div>
+                        <div className="bubble-time">{fmtTime(m.timestamp, true)}</div>
                       </div>
                     </div>
                   ))}
@@ -542,10 +549,21 @@ const strColor = (s = '') => {
   return colors[Math.abs(h) % colors.length];
 };
 
-const fmtTime = ts => {
+const IST = 'Asia/Kolkata';
+const fmtTime = (ts, full = false) => {
   if (!ts) return '';
   const d = new Date(ts * 1000), now = new Date();
-  return d.toDateString() === now.toDateString()
-    ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  const todayIST = now.toLocaleDateString('en-IN', { timeZone: IST });
+  const dateIST  = d.toLocaleDateString('en-IN', { timeZone: IST });
+  const timeStr  = d.toLocaleTimeString('en-IN', { timeZone: IST, hour: '2-digit', minute: '2-digit', hour12: true });
+  if (full) {
+    // Full date+time for message bubbles
+    return todayIST === dateIST
+      ? timeStr
+      : d.toLocaleDateString('en-IN', { timeZone: IST, day: 'numeric', month: 'short', year: '2-digit' }) + ', ' + timeStr;
+  }
+  // Short for chat list
+  return todayIST === dateIST
+    ? timeStr
+    : d.toLocaleDateString('en-IN', { timeZone: IST, day: 'numeric', month: 'short' });
 };
