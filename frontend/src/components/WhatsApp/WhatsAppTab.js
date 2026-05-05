@@ -15,7 +15,12 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
 
   const messagesEndRef     = useRef(null);
   const scrollContainerRef = useRef(null);
-  const [msgLimit, setMsgLimit] = useState(200);
+  const [msgLimit,      setMsgLimit]      = useState(200);
+  const [showNewChat,   setShowNewChat]   = useState(false);
+  const [newChatNumber, setNewChatNumber] = useState('');
+  const [newChatMsg,    setNewChatMsg]    = useState('');
+  const [newChatSending,setNewChatSending]= useState(false);
+  const [newChatError,  setNewChatError]  = useState('');
   const qrTimerRef     = useRef(null);
 
   // ── Merge server-pushed chats into local state ──────
@@ -218,6 +223,34 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
       console.error('[WA] loadMessages failed', e);
     }
     setLoading(false);
+  }
+
+  async function sendNewChat() {
+    const num = newChatNumber.replace(/\D/g, '');
+    if (!num || num.length < 7) { setNewChatError('Enter a valid number with country code'); return; }
+    if (!newChatMsg.trim()) { setNewChatError('Enter a message'); return; }
+    if (!activeAccount) { setNewChatError('Select an account first'); return; }
+    setNewChatSending(true); setNewChatError('');
+    try {
+      const jid = num + '@s.whatsapp.net';
+      await waAPI.send(activeAccount, jid, newChatMsg.trim());
+      // Open this chat in the panel
+      const fakeChat = {
+        id: jid,
+        name: newChatNumber,
+        isGroup: false,
+        unreadCount: 0,
+        lastMessage: newChatMsg.trim(),
+        lastMessageTime: Math.floor(Date.now() / 1000),
+      };
+      openChat(fakeChat);
+      setShowNewChat(false);
+      setNewChatNumber('');
+      setNewChatMsg('');
+    } catch (e) {
+      setNewChatError(e.response?.data?.error || e.message);
+    }
+    setNewChatSending(false);
   }
 
   async function sendMessage() {
