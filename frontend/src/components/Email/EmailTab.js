@@ -32,7 +32,7 @@ const btnFill    = (color) => ({ padding: '8px 18px', borderRadius: 8, border: '
 
 // ── AddAccountModal ───────────────────────────────────────────────────────────
 function AddAccountModal({ type, onClose, onSaved }) {
-  const [form, setForm]         = useState({ label: '', user: '', password: '' });
+  const [form, setForm]         = useState({ label: '', user: '', password: '', zohoRegion: 'in' });
   const [saving, setSaving]     = useState(false);
   const [testing, setTesting]   = useState(false);
   const [testResult, setTestResult] = useState(null);
@@ -47,7 +47,7 @@ function AddAccountModal({ type, onClose, onSaved }) {
     if (!form.label || !form.user || !form.password) { setError('Fill all fields before testing.'); return; }
     setTesting(true); setTestResult(null); setError('');
     try {
-      await emailAPI.addAccount({ ...form, type, testOnly: true });
+      await emailAPI.addAccount({ ...form, type, zohoRegion: form.zohoRegion, testOnly: true });
       setTestResult({ ok: true, msg: 'Connection successful! Credentials are valid.' });
     } catch (e) {
       setTestResult({ ok: false, msg: e.response?.data?.error || e.message || 'Connection failed.' });
@@ -59,7 +59,7 @@ function AddAccountModal({ type, onClose, onSaved }) {
     if (!form.label || !form.user || !form.password) { setError('All fields are required.'); return; }
     setSaving(true); setError('');
     try {
-      await emailAPI.addAccount({ ...form, type });
+      await emailAPI.addAccount({ ...form, type, zohoRegion: form.zohoRegion });
       onSaved();
     } catch (e) {
       setError(e.response?.data?.error || e.message);
@@ -103,6 +103,20 @@ function AddAccountModal({ type, onClose, onSaved }) {
             <label style={lbl}>{isGmail ? 'App Password' : 'Password'}</label>
             <input style={inp} type="password" placeholder="••••••••••••••••" value={form.password} onChange={set('password')} />
           </div>
+          {!isGmail && (
+            <div style={fieldCol}>
+              <label style={lbl}>Zoho Region</label>
+              <select style={inp} value={form.zohoRegion} onChange={set('zohoRegion')}>
+                <option value="in">India (zoho.in) — imappro.zoho.in</option>
+                <option value="com">Global (zoho.com) — imap.zoho.com</option>
+                <option value="eu">Europe (zoho.eu) — imap.zoho.eu</option>
+                <option value="au">Australia (zoho.com.au) — imap.zoho.com.au</option>
+              </select>
+              <span style={{ fontSize: 11, color: 'var(--text3)', marginTop: 3 }}>
+                Choose based on where your Zoho account was created, not your email domain.
+              </span>
+            </div>
+          )}
 
           {testResult && (
             <div style={{

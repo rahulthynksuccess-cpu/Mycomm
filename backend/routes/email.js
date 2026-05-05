@@ -43,7 +43,8 @@ router.post('/accounts', async (req, res) => {
     const existing = accounts.find(a => a.user.toLowerCase() === user.toLowerCase() && a.type === type);
     if (existing) return res.status(409).json({ error: `Account ${user} (${type}) is already connected.` });
     // Add new account
-    const newAccount = { id: id || 'email_' + Date.now(), label, user, password, type, color: color || type };
+    const { zohoRegion } = req.body;
+    const newAccount = { id: id || 'email_' + Date.now(), label, user, password, type, color: color || type, zohoRegion: zohoRegion || 'in' };
     accounts.push(newAccount);
     await pool.query(
       `INSERT INTO wa_sessions (account_id, key, value) VALUES ('system', 'email_accounts', $1)

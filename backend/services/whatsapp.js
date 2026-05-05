@@ -92,7 +92,7 @@ function resolveName(accountId, jid, fallback) {
   return phone || jid;
 }
 
-function buildChatList(accountId, limit = 50) {
+function buildChatList(accountId, limit = 500) {
   const map = chatMap[accountId];
   if (!map || map.size === 0) return [];
   return [...map.values()]
@@ -153,6 +153,13 @@ async function createClient(accountId, io) {
     markOnlineOnConnect: true,
     connectTimeoutMs: 60_000,
     keepAliveIntervalMs: 25_000,
+    // Required for history sync — Baileys calls this to decrypt older messages
+    getMessage: async (key) => {
+      const jid = key.remoteJid;
+      const msgs = msgMap[accountId]?.get(jid) || [];
+      const found = msgs.find(m => m.key.id === key.id);
+      return found?.message || { conversation: '' };
+    },
   });
 
   clients[accountId] = sock;
@@ -174,7 +181,7 @@ async function createClient(accountId, io) {
       emitStatus(io, accountId, { status: 'ready', phone, name });
 
       // Push chats at intervals — history sync can take time
-      [2000, 5000, 10000, 20000].forEach(delay => {
+      [1000, 3000, 6000, 12000, 25000, 45000].forEach(delay => {
         setTimeout(() => pushChats(), delay);
       });
     }
@@ -251,7 +258,7 @@ async function createClient(accountId, io) {
       io.emit('wa:chats', { accountId, chats: list });
       // Save to DB cache — only when list has meaningful size (>5 chats)
       // This prevents a single new message from overwriting the full cache with 1 chat
-      if (pool && list.length > 5) {
+      if (pool && list.length > 0) {
         pool.query(
           `INSERT INTO wa_sessions (account_id, key, value)
            VALUES ($1, 'chats_cache', $2)
@@ -453,16 +460,29 @@ async function getRecentChats(accountId, limit = 50) {
 async function getChatMessages(accountId, chatId, limit = 200) {
   let msgs = msgMap[accountId]?.get(chatId) || [];
 
-  // If no cached messages, try loading from DB
+  // If no cached messages, try loading from DB (per-chat first, then full blob)
   if (msgs.length === 0 && pool) {
     try {
-      const res = await pool.query(
+      // Try per-chat key first (most recent save)
+      let res = await pool.query(
         "SELECT value FROM wa_sessions WHERE account_id = $1 AND key = $2",
         [accountId, `msgs_${chatId}`]
       );
       if (res.rows.length) {
         msgs = JSON.parse(res.rows[0].value);
         if (msgs.length) msgMap[accountId].set(chatId, msgs);
+      }
+      // Fall back to full msgs_cache blob
+      if (!msgs.length) {
+        res = await pool.query(
+          "SELECT value FROM wa_sessions WHERE account_id = $1 AND key = 'msgs_cache'",
+          [accountId]
+        );
+        if (res.rows.length) {
+          const allMsgs = JSON.parse(res.rows[0].value);
+          msgs = allMsgs[chatId] || [];
+          if (msgs.length) msgMap[accountId].set(chatId, msgs);
+        }
       }
     } catch (e) {}
   }

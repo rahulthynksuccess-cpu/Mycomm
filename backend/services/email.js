@@ -36,13 +36,22 @@ function getImapConfig(account) {
   const base = { user: account.user, password: account.password, tls: true, tlsOptions: { rejectUnauthorized: false } };
   if (account.type === 'gmail') return { ...base, host: 'imap.gmail.com', port: 993 };
   if (account.type === 'zoho') {
-    // zoho.in domains use imappro.zoho.in; zoho.com domains use imap.zoho.com
-    const zohoHost = account.user.endsWith('@zoho.in') || account.user.includes('@zohocorp.com')
-      ? 'imappro.zoho.in'
-      : account.user.endsWith('.in') 
-      ? 'imappro.zoho.in'
-      : 'imap.zoho.com';
-    return { ...base, host: zohoHost, port: 993 };
+    // Use explicitly saved region first; fall back to auto-detect from email domain
+    let region = account.zohoRegion;
+    if (!region) {
+      const u = (account.user || '').toLowerCase();
+      if (u.endsWith('@zoho.in') || u.endsWith('.in')) region = 'in';
+      else if (u.endsWith('@zoho.eu') || u.includes('.eu')) region = 'eu';
+      else if (u.endsWith('.com.au')) region = 'au';
+      else region = 'in'; // default to India (most common for this app)
+    }
+    const imapHosts = {
+      in:  'imappro.zoho.in',
+      com: 'imap.zoho.com',
+      eu:  'imap.zoho.eu',
+      au:  'imap.zoho.com.au',
+    };
+    return { ...base, host: imapHosts[region] || 'imappro.zoho.in', port: 993 };
   }
   // fallback: custom IMAP
   return { ...base, host: account.imapHost, port: account.imapPort || 993 };
@@ -52,10 +61,21 @@ function getImapConfig(account) {
 function getSmtpConfig(account) {
   if (account.type === 'gmail') return { host: 'smtp.gmail.com', port: 587, secure: false, auth: { user: account.user, pass: account.password } };
   if (account.type === 'zoho') {
-    const smtpHost = account.user.endsWith('@zoho.in') || account.user.endsWith('.in')
-      ? 'smtp.zoho.in'
-      : 'smtp.zoho.com';
-    return { host: smtpHost, port: 587, secure: false, auth: { user: account.user, pass: account.password } };
+    let region = account.zohoRegion;
+    if (!region) {
+      const u = (account.user || '').toLowerCase();
+      if (u.endsWith('@zoho.in') || u.endsWith('.in')) region = 'in';
+      else if (u.endsWith('@zoho.eu') || u.includes('.eu')) region = 'eu';
+      else if (u.endsWith('.com.au')) region = 'au';
+      else region = 'in';
+    }
+    const smtpHosts = {
+      in:  'smtp.zoho.in',
+      com: 'smtp.zoho.com',
+      eu:  'smtp.zoho.eu',
+      au:  'smtp.zoho.com.au',
+    };
+    return { host: smtpHosts[region] || 'smtp.zoho.in', port: 587, secure: false, auth: { user: account.user, pass: account.password } };
   }
   return { host: account.smtpHost, port: account.smtpPort || 587, secure: false, auth: { user: account.user, pass: account.password } };
 }

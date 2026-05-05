@@ -50,7 +50,7 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
     // Try immediately, then retry after 4s if empty (backend needs time to sync)
     const attempt = async () => {
       try {
-        const c = await waAPI.getChats(accountId);
+        const c = await waAPI.getChats(accountId, 500);
         if (Array.isArray(c) && c.length > 0) {
           setChats(prev => ({ ...prev, [accountId]: c }));
           return true;
@@ -62,7 +62,10 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
       }
     };
     const got = await attempt();
-    if (!got) setTimeout(() => attempt(), 4000);  // retry once after 4s
+    if (!got) {
+      // WhatsApp history sync can take 30–60s on first connect, retry multiple times
+      [4000, 10000, 20000, 35000].forEach(delay => setTimeout(() => attempt(), delay));
+    }
   }, []);
 
   // ── Auto-select first ready account (only when none selected) ──
