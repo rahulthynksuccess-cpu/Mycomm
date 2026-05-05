@@ -76,8 +76,12 @@ export default function CalendarTab() {
   async function connectAccount(accountId) {
     try {
       const { url } = await calendarAPI.getAuthUrl(accountId);
+      if (!url) { alert('Server did not return an auth URL. Check GOOGLE_CLIENT_ID is set in Railway.'); return; }
       window.open(url, '_blank', 'width=500,height=600');
-    } catch (e) { alert('Failed to get auth URL: ' + e.message); }
+    } catch (e) {
+      const msg = e.response?.data?.error || e.message;
+      alert('Cannot connect: ' + msg);
+    }
   }
 
   async function createEvent() {

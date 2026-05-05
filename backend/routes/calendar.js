@@ -59,6 +59,14 @@ router.get('/accounts', async (req, res) => {
 router.get('/auth', (req, res) => {
   const { accountId } = req.query;
   if (!accountId) return res.status(400).json({ error: 'accountId required' });
+
+  if (!process.env.GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID === 'undefined') {
+    return res.status(500).json({ error: 'GOOGLE_CLIENT_ID is not set. Add it to Railway environment variables and redeploy.' });
+  }
+  if (!process.env.GOOGLE_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET === 'undefined') {
+    return res.status(500).json({ error: 'GOOGLE_CLIENT_SECRET is not set. Add it to Railway environment variables and redeploy.' });
+  }
+
   const url = getAuthUrl(accountId);
   res.json({ url });
 });
