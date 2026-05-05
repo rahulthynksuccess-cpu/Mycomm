@@ -35,7 +35,15 @@ async function getAccountsAsync() {
 function getImapConfig(account) {
   const base = { user: account.user, password: account.password, tls: true, tlsOptions: { rejectUnauthorized: false } };
   if (account.type === 'gmail') return { ...base, host: 'imap.gmail.com', port: 993 };
-  if (account.type === 'zoho')  return { ...base, host: 'imap.zoho.in',   port: 993 };
+  if (account.type === 'zoho') {
+    // zoho.in domains use imappro.zoho.in; zoho.com domains use imap.zoho.com
+    const zohoHost = account.user.endsWith('@zoho.in') || account.user.includes('@zohocorp.com')
+      ? 'imappro.zoho.in'
+      : account.user.endsWith('.in') 
+      ? 'imappro.zoho.in'
+      : 'imap.zoho.com';
+    return { ...base, host: zohoHost, port: 993 };
+  }
   // fallback: custom IMAP
   return { ...base, host: account.imapHost, port: account.imapPort || 993 };
 }
@@ -43,7 +51,12 @@ function getImapConfig(account) {
 // ─── SMTP config per provider ──────────────────────────
 function getSmtpConfig(account) {
   if (account.type === 'gmail') return { host: 'smtp.gmail.com', port: 587, secure: false, auth: { user: account.user, pass: account.password } };
-  if (account.type === 'zoho')  return { host: 'smtp.zoho.in',   port: 587, secure: false, auth: { user: account.user, pass: account.password } };
+  if (account.type === 'zoho') {
+    const smtpHost = account.user.endsWith('@zoho.in') || account.user.endsWith('.in')
+      ? 'smtp.zoho.in'
+      : 'smtp.zoho.com';
+    return { host: smtpHost, port: 587, secure: false, auth: { user: account.user, pass: account.password } };
+  }
   return { host: account.smtpHost, port: account.smtpPort || 587, secure: false, auth: { user: account.user, pass: account.password } };
 }
 

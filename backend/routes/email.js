@@ -39,6 +39,9 @@ router.post('/accounts', async (req, res) => {
     let accounts = [];
     const r = await pool.query("SELECT value FROM wa_sessions WHERE account_id = 'system' AND key = 'email_accounts'");
     if (r.rows.length) accounts = JSON.parse(r.rows[0].value);
+    // Prevent duplicate: check if same email+type already exists
+    const existing = accounts.find(a => a.user.toLowerCase() === user.toLowerCase() && a.type === type);
+    if (existing) return res.status(409).json({ error: `Account ${user} (${type}) is already connected.` });
     // Add new account
     const newAccount = { id: id || 'email_' + Date.now(), label, user, password, type, color: color || type };
     accounts.push(newAccount);
@@ -66,6 +69,31 @@ router.delete('/accounts/:accountId', async (req, res) => {
       [JSON.stringify(accounts)]
     );
     res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/email/accounts/deduplicate — remove duplicate accounts from DB (one-time cleanup)
+router.post('/accounts/deduplicate', async (req, res) => {
+  if (!pool) return res.status(500).json({ error: 'Database not available' });
+  try {
+    const r = await pool.query("SELECT value FROM wa_sessions WHERE account_id = 'system' AND key = 'email_accounts'");
+    if (!r.rows.length) return res.json({ removed: 0 });
+    const accounts = JSON.parse(r.rows[0].value);
+    const seen = new Set();
+    const unique = accounts.filter(a => {
+      const key = a.user.toLowerCase() + '|' + a.type;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    await pool.query(
+      `INSERT INTO wa_sessions (account_id, key, value) VALUES ('system', 'email_accounts', $1)
+       ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value`,
+      [JSON.stringify(unique)]
+    );
+    res.json({ removed: accounts.length - unique.length, remaining: unique.length });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

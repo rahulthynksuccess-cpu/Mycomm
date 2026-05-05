@@ -215,12 +215,23 @@ export default function EmailTab() {
 
   const loadAccounts = useCallback(() => {
     emailAPI.getAccounts().then(accs => {
-      setAccounts(accs);
-      if (accs.length) setActiveAccount(prev => prev || accs[0].id);
+      // Deduplicate by user+type in case DB has duplicates
+      const seen = new Set();
+      const unique = accs.filter(a => {
+        const key = a.user.toLowerCase() + '|' + a.type;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      setAccounts(unique);
+      if (unique.length) setActiveAccount(prev => prev || unique[0].id);
     }).catch(console.error);
   }, []);
 
-  useEffect(() => { loadAccounts(); }, [loadAccounts]);
+  useEffect(() => {
+    // Clean up any duplicate accounts in DB on first load, then reload
+    emailAPI.deduplicateAccounts().catch(() => {}).finally(() => loadAccounts());
+  }, [loadAccounts]);
 
   async function handleDeleteAccount(id) {
     if (!window.confirm('Remove this email account?')) return;
