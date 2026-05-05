@@ -10,9 +10,49 @@ const {
   getConnectedAccounts,
 } = require('../services/calendar');
 
-// GET /api/calendar/accounts — list connected calendar accounts
-router.get('/accounts', (req, res) => {
-  res.json(getConnectedAccounts().map(id => ({ id })));
+const { pool } = require('../services/db');
+
+// Helper: get Gmail accounts from email_accounts store
+async function getGmailAccounts() {
+  if (pool) {
+    try {
+      const r = await pool.query("SELECT value FROM wa_sessions WHERE account_id = 'system' AND key = 'email_accounts'");
+      if (r.rows.length) {
+        const accounts = JSON.parse(r.rows[0].value);
+        return accounts.filter(a => a.type === 'gmail');
+      }
+    } catch (e) {}
+  }
+  try {
+    const envAccounts = JSON.parse(process.env.EMAIL_ACCOUNTS || '[]');
+    return envAccounts.filter(a => a.type === 'gmail');
+  } catch (e) { return []; }
+}
+
+// GET /api/calendar/accounts — list Gmail email accounts + OAuth status
+router.get('/accounts', async (req, res) => {
+  try {
+    const gmailAccounts = await getGmailAccounts();
+    const connectedIds = getConnectedAccounts();
+
+    const accounts = gmailAccounts.map(a => ({
+      id: a.id,
+      label: a.label,
+      user: a.user,
+      isConnected: connectedIds.includes(a.id),
+    }));
+
+    // Include any OAuth-connected accounts not already in email list (legacy)
+    connectedIds.forEach(id => {
+      if (!accounts.find(a => a.id === id)) {
+        accounts.push({ id, label: id, user: id, isConnected: true });
+      }
+    });
+
+    res.json(accounts);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // GET /api/calendar/auth?accountId=... — get OAuth URL to connect a Google account

@@ -11,23 +11,23 @@ const VIEWS = ['month', 'week', 'day', 'agenda'];
 const EVENT_COLORS = ['#7c5cfc','#3ecf8e','#60a5fa','#f472b6','#fbbf24','#f87171','#a78bfa','#34d399'];
 
 export default function CalendarTab() {
-  const [accounts, setAccounts] = useState([]);
-  const [calendars, setCalendars] = useState({});      // accountId → [calendar]
-  const [events, setEvents] = useState([]);
-  const [view, setView] = useState('month');
-  const [currentDate, setCurrentDate] = useState(new Date());
-  const [selectedEvent, setSelectedEvent] = useState(null);
+  const [accounts, setAccounts]               = useState([]);
+  const [calendars, setCalendars]             = useState({});
+  const [events, setEvents]                   = useState([]);
+  const [view, setView]                       = useState('month');
+  const [currentDate, setCurrentDate]         = useState(new Date());
+  const [selectedEvent, setSelectedEvent]     = useState(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [showEventModal, setShowEventModal] = useState(false);
-  const [newEvent, setNewEvent] = useState(defaultEvent());
-  const [loading, setLoading] = useState(false);
-  const [connectingAccount, setConnectingAccount] = useState(false);
-  const [newCalAccount, setNewCalAccount] = useState('');
+  const [showEventModal, setShowEventModal]   = useState(false);
+  const [newEvent, setNewEvent]               = useState(defaultEvent());
+  const [loading, setLoading]                 = useState(false);
 
-  useEffect(() => {
+  // Load accounts (Gmail email accounts + their OAuth status)
+  const loadAccounts = useCallback(() => {
     calendarAPI.getAccounts().then(accs => {
       setAccounts(accs);
-      accs.forEach(a => {
+      // Load calendars for already-connected accounts
+      accs.filter(a => a.isConnected).forEach(a => {
         calendarAPI.getCalendars(a.id).then(cals => {
           setCalendars(prev => ({ ...prev, [a.id]: cals }));
         }).catch(() => {});
@@ -35,22 +35,24 @@ export default function CalendarTab() {
     }).catch(console.error);
   }, []);
 
+  useEffect(() => { loadAccounts(); }, [loadAccounts]);
+
   const loadEvents = useCallback(async () => {
-    if (!accounts.length) return;
+    const connectedAccounts = accounts.filter(a => a.isConnected);
+    if (!connectedAccounts.length) return;
     setLoading(true);
     try {
       const { start, end } = getViewRange(view, currentDate);
       const allEvents = [];
-      for (const acc of accounts) {
+      for (const acc of connectedAccounts) {
         const evts = await calendarAPI.getEvents(acc.id, {
           start: start.toISOString(),
           end: end.toISOString(),
         }).catch(() => []);
-        // Attach calendar color
         const cals = calendars[acc.id] || [];
         evts.forEach(e => {
           const cal = cals.find(c => c.id === e.calendarId);
-          allEvents.push({ ...e, calendarColor: cal?.color || 'var(--accent)', accountLabel: acc.id });
+          allEvents.push({ ...e, calendarColor: cal?.color || 'var(--accent)', accountLabel: acc.label || acc.id });
         });
       }
       setEvents(allEvents);
@@ -60,34 +62,30 @@ export default function CalendarTab() {
 
   useEffect(() => { loadEvents(); }, [loadEvents]);
 
-  // Listen for Google OAuth callback
+  // Listen for Google OAuth callback from popup window
   useEffect(() => {
     const handler = (e) => {
       if (e.data?.type === 'GOOGLE_AUTH_SUCCESS') {
-        setAccounts(prev => [...prev, { id: e.data.accountId }]);
-        setConnectingAccount(false);
+        loadAccounts();
       }
     };
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  }, []);
+  }, [loadAccounts]);
 
-  async function connectGoogleAccount() {
-    const id = newCalAccount.trim();
-    if (!id) { alert('Enter an account label first.'); return; }
+  async function connectAccount(accountId) {
     try {
-      const { url } = await calendarAPI.getAuthUrl(id);
+      const { url } = await calendarAPI.getAuthUrl(accountId);
       window.open(url, '_blank', 'width=500,height=600');
-      setConnectingAccount(false);
-      setNewCalAccount('');
-    } catch (e) { alert('Failed: ' + e.message); }
+    } catch (e) { alert('Failed to get auth URL: ' + e.message); }
   }
 
   async function createEvent() {
     if (!newEvent.title.trim()) { alert('Title is required.'); return; }
-    if (!accounts.length) { alert('Connect a Google account first.'); return; }
+    const connectedAccounts = accounts.filter(a => a.isConnected);
+    if (!connectedAccounts.length) { alert('Connect a Google account first.'); return; }
     try {
-      const accountId = newEvent.accountId || accounts[0].id;
+      const accountId = newEvent.accountId || connectedAccounts[0].id;
       const calendarId = newEvent.calendarId || 'primary';
       const created = await calendarAPI.createEvent(accountId, { ...newEvent, calendarId });
       setEvents(prev => [...prev, { ...created, calendarColor: EVENT_COLORS[0] }]);
@@ -125,6 +123,9 @@ export default function CalendarTab() {
     return isSameDay(start, day) || (start <= day && end >= day);
   });
 
+  const connectedAccounts = accounts.filter(a => a.isConnected);
+  const unconnectedAccounts = accounts.filter(a => !a.isConnected);
+
   return (
     <div className="tab-layout">
       {/* Header */}
@@ -150,42 +151,89 @@ export default function CalendarTab() {
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
           {loading && <span style={{ fontSize: 12, color: 'var(--text3)', alignSelf: 'center' }}>Syncing…</span>}
-          <button className="btn" onClick={() => setConnectingAccount(true)}>+ Connect Google</button>
           <button className="btn btn-primary" onClick={() => setShowCreateModal(true)}>+ New Event</button>
         </div>
       </div>
 
       <div className="tab-body" style={{ flexDirection: 'column', overflow: 'hidden' }}>
-        {/* Calendar sidebar: mini accounts + calendars */}
         <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-          <div style={{ width: 200, borderRight: '1px solid var(--border)', background: 'var(--bg2)', overflowY: 'auto', flexShrink: 0 }}>
-            <div className="section-label">Accounts</div>
-            {accounts.length === 0 && (
-              <div style={{ padding: '8px 14px', fontSize: 12, color: 'var(--text3)', lineHeight: 1.6 }}>
-                No accounts connected. Click "+ Connect Google" to add one.
+
+          {/* Sidebar */}
+          <div style={{ width: 210, borderRight: '1px solid var(--border)', background: 'var(--bg2)', overflowY: 'auto', flexShrink: 0 }}>
+
+            {/* Connected accounts */}
+            <div className="section-label">Connected</div>
+            {connectedAccounts.length === 0 && (
+              <div style={{ padding: '6px 14px 10px', fontSize: 12, color: 'var(--text3)', lineHeight: 1.6 }}>
+                No accounts connected yet.
               </div>
             )}
-            {accounts.map(acc => (
+            {connectedAccounts.map(acc => (
               <div key={acc.id}>
-                <div style={{ padding: '6px 14px', fontSize: 13, fontWeight: 600, color: 'var(--text2)' }}>
-                  📅 {acc.id}
+                <div style={{ padding: '6px 14px', fontSize: 13, fontWeight: 600, color: 'var(--text2)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#3ecf8e', flexShrink: 0, display: 'inline-block' }} />
+                  {acc.label || acc.user}
+                  <span style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 400, marginLeft: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 90 }}>{acc.user}</span>
                 </div>
                 {(calendars[acc.id] || []).map(cal => (
-                  <div key={cal.id} style={{ padding: '4px 14px 4px 22px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text3)' }}>
-                    <span style={{ width: 10, height: 10, borderRadius: '50%', background: cal.color || 'var(--accent)', flexShrink: 0, display: 'inline-block' }} />
+                  <div key={cal.id} style={{ padding: '3px 14px 3px 26px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text3)' }}>
+                    <span style={{ width: 9, height: 9, borderRadius: '50%', background: cal.color || 'var(--accent)', flexShrink: 0, display: 'inline-block' }} />
                     {cal.summary}
                   </div>
                 ))}
               </div>
             ))}
+
+            {/* Unconnected Gmail accounts — show connect button */}
+            {unconnectedAccounts.length > 0 && (
+              <>
+                <div className="section-label" style={{ marginTop: 8 }}>Not Connected</div>
+                {unconnectedAccounts.map(acc => (
+                  <div key={acc.id} style={{ padding: '8px 14px', borderBottom: '1px solid var(--border)' }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text2)', marginBottom: 4 }}>{acc.label || acc.user}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{acc.user}</div>
+                    <button
+                      onClick={() => connectAccount(acc.id)}
+                      style={{
+                        width: '100%', padding: '5px 0', borderRadius: 6,
+                        border: '1.5px solid #4285F4', background: 'none',
+                        color: '#4285F4', fontSize: 11.5, fontWeight: 600, cursor: 'pointer',
+                      }}
+                    >
+                      🔗 Connect Google Calendar
+                    </button>
+                  </div>
+                ))}
+              </>
+            )}
+
+            {accounts.length === 0 && (
+              <div style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text3)', lineHeight: 1.7 }}>
+                Add a Gmail account in the Email tab first, then connect it to Google Calendar here.
+              </div>
+            )}
           </div>
 
           {/* Calendar view area */}
           <div style={{ flex: 1, overflow: 'auto', padding: view === 'agenda' ? 20 : 0 }}>
-            {view === 'month' && <MonthView currentDate={currentDate} events={events} eventsOnDay={eventsOnDay} onDayClick={openCreateAtDate} onEventClick={e => { setSelectedEvent(e); setShowEventModal(true); }} />}
-            {view === 'week'  && <WeekView  currentDate={currentDate} events={events} eventsOnDay={eventsOnDay} onDayClick={openCreateAtDate} onEventClick={e => { setSelectedEvent(e); setShowEventModal(true); }} />}
-            {view === 'day'   && <DayView   currentDate={currentDate} events={eventsOnDay(currentDate)} onEventClick={e => { setSelectedEvent(e); setShowEventModal(true); }} onTimeClick={openCreateAtDate} />}
-            {view === 'agenda' && <AgendaView events={events} onEventClick={e => { setSelectedEvent(e); setShowEventModal(true); }} />}
+            {connectedAccounts.length === 0 ? (
+              <div className="empty-state">
+                <div className="empty-icon">📅</div>
+                <div className="empty-title">No calendar connected</div>
+                <div className="empty-sub">
+                  {accounts.length > 0
+                    ? 'Click "Connect Google Calendar" in the sidebar to authorise calendar access.'
+                    : 'Add a Gmail account in the Email tab first, then connect it here.'}
+                </div>
+              </div>
+            ) : (
+              <>
+                {view === 'month' && <MonthView currentDate={currentDate} events={events} eventsOnDay={eventsOnDay} onDayClick={openCreateAtDate} onEventClick={e => { setSelectedEvent(e); setShowEventModal(true); }} />}
+                {view === 'week'  && <WeekView  currentDate={currentDate} events={events} eventsOnDay={eventsOnDay} onDayClick={openCreateAtDate} onEventClick={e => { setSelectedEvent(e); setShowEventModal(true); }} />}
+                {view === 'day'   && <DayView   currentDate={currentDate} events={eventsOnDay(currentDate)} onEventClick={e => { setSelectedEvent(e); setShowEventModal(true); }} onTimeClick={openCreateAtDate} />}
+                {view === 'agenda' && <AgendaView events={events} onEventClick={e => { setSelectedEvent(e); setShowEventModal(true); }} />}
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -231,11 +279,11 @@ export default function CalendarTab() {
                 <label>Attendees (comma-separated emails)</label>
                 <input className="input" placeholder="a@example.com, b@example.com" value={newEvent.attendeesRaw || ''} onChange={e => setNewEvent({ ...newEvent, attendeesRaw: e.target.value, attendees: e.target.value.split(',').map(x => x.trim()).filter(Boolean) })} />
               </div>
-              {accounts.length > 0 && (
+              {connectedAccounts.length > 0 && (
                 <div className="field">
                   <label>Calendar account</label>
-                  <select className="input" value={newEvent.accountId} onChange={e => setNewEvent({ ...newEvent, accountId: e.target.value })}>
-                    {accounts.map(a => <option key={a.id} value={a.id}>{a.id}</option>)}
+                  <select className="input" value={newEvent.accountId || connectedAccounts[0].id} onChange={e => setNewEvent({ ...newEvent, accountId: e.target.value })}>
+                    {connectedAccounts.map(a => <option key={a.id} value={a.id}>{a.label} ({a.user})</option>)}
                   </select>
                 </div>
               )}
@@ -309,28 +357,6 @@ export default function CalendarTab() {
           </div>
         </div>
       )}
-
-      {/* Connect Google account modal */}
-      {connectingAccount && (
-        <div className="modal-overlay" onClick={() => setConnectingAccount(false)}>
-          <div className="modal" style={{ width: 400 }} onClick={e => e.stopPropagation()}>
-            <div className="modal-header">Connect Google Calendar <button className="modal-close" onClick={() => setConnectingAccount(false)}>×</button></div>
-            <div className="modal-body">
-              <p style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.6 }}>
-                A Google sign-in window will open. After authorizing, your calendar will appear here automatically.
-              </p>
-              <div className="field">
-                <label>Account label (e.g. "work", "personal")</label>
-                <input className="input" placeholder="personal" value={newCalAccount} onChange={e => setNewCalAccount(e.target.value)} />
-              </div>
-            </div>
-            <div className="modal-footer">
-              <button className="btn" onClick={() => setConnectingAccount(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={connectGoogleAccount}>Connect with Google →</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -368,11 +394,11 @@ function MonthView({ currentDate, eventsOnDay, onDayClick, onEventClick }) {
             >
               <div style={{
                 fontSize: 12, fontWeight: isNow ? 700 : 400, marginBottom: 4,
-                color: isNow ? 'var(--accent)' : isOther ? 'var(--text3)' : 'var(--text)',
+                color: isNow ? '#fff' : isOther ? 'var(--text3)' : 'var(--text)',
                 display: 'flex', alignItems: 'center', justifyContent: isNow ? 'center' : 'flex-start',
                 width: isNow ? 22 : 'auto', height: isNow ? 22 : 'auto',
                 background: isNow ? 'var(--accent)' : 'transparent',
-                borderRadius: isNow ? '50%' : 0, color: isNow ? '#fff' : undefined,
+                borderRadius: isNow ? '50%' : 0,
               }}>
                 {format(day, 'd')}
               </div>
@@ -418,10 +444,7 @@ function WeekView({ currentDate, eventsOnDay, onDayClick, onEventClick }) {
             }}
           >
             <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 2 }}>{format(day, 'EEE')}</div>
-            <div style={{
-              fontSize: 18, fontWeight: 700,
-              color: isToday(day) ? 'var(--accent)' : 'var(--text)',
-            }}>{format(day, 'd')}</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: isToday(day) ? 'var(--accent)' : 'var(--text)' }}>{format(day, 'd')}</div>
           </div>
         ))}
       </div>
@@ -536,7 +559,6 @@ function AgendaView({ events, onEventClick }) {
                 cursor: 'pointer', marginBottom: 4,
                 border: '1px solid var(--border)',
                 background: 'var(--bg2)',
-                transition: 'background 0.12s',
                 borderLeft: `4px solid ${e.calendarColor || 'var(--accent)'}`,
               }}
             >
