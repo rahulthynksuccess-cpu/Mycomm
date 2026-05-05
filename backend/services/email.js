@@ -65,7 +65,8 @@ function openImap(account, mailbox = 'INBOX') {
 // ─── Fetch email list (headers only) ──────────────────
 async function fetchEmails(accountId, options = {}) {
   const { folder = 'INBOX', limit = 50, page = 1, search = ['ALL'] } = options;
-  const account = getAccounts().find(a => a.id === accountId);
+  const accounts = await getAccountsAsync();
+  const account = accounts.find(a => a.id === accountId);
   if (!account) throw new Error(`Account ${accountId} not found.`);
 
   return new Promise((resolve, reject) => {
@@ -137,7 +138,8 @@ async function fetchEmails(accountId, options = {}) {
 
 // ─── Fetch full email body ─────────────────────────────
 async function fetchEmailBody(accountId, uid, folder = 'INBOX') {
-  const account = getAccounts().find(a => a.id === accountId);
+  const accounts = await getAccountsAsync();
+  const account = accounts.find(a => a.id === accountId);
   if (!account) throw new Error(`Account ${accountId} not found.`);
 
   return new Promise((resolve, reject) => {
@@ -187,7 +189,8 @@ async function fetchEmailBody(accountId, uid, folder = 'INBOX') {
 
 // ─── Send email ────────────────────────────────────────
 async function sendEmail(accountId, { to, cc, bcc, subject, text, html, replyTo, attachments = [] }) {
-  const account = getAccounts().find(a => a.id === accountId);
+  const accounts = await getAccountsAsync();
+  const account = accounts.find(a => a.id === accountId);
   if (!account) throw new Error(`Account ${accountId} not found.`);
 
   const transporter = nodemailer.createTransporter(getSmtpConfig(account));
@@ -205,7 +208,8 @@ async function sendEmail(accountId, { to, cc, bcc, subject, text, html, replyTo,
 
 // ─── Delete email (move to Trash) ─────────────────────
 async function deleteEmail(accountId, uid, folder = 'INBOX') {
-  const account = getAccounts().find(a => a.id === accountId);
+  const accounts = await getAccountsAsync();
+  const account = accounts.find(a => a.id === accountId);
   if (!account) throw new Error(`Account ${accountId} not found.`);
 
   return new Promise((resolve, reject) => {
@@ -230,7 +234,8 @@ async function deleteEmail(accountId, uid, folder = 'INBOX') {
 
 // ─── Move email to folder ──────────────────────────────
 async function moveEmail(accountId, uid, fromFolder, toFolder) {
-  const account = getAccounts().find(a => a.id === accountId);
+  const accounts = await getAccountsAsync();
+  const account = accounts.find(a => a.id === accountId);
   if (!account) throw new Error(`Account ${accountId} not found.`);
 
   return new Promise((resolve, reject) => {
@@ -252,7 +257,8 @@ async function moveEmail(accountId, uid, fromFolder, toFolder) {
 
 // ─── Flag / unflag email ───────────────────────────────
 async function flagEmail(accountId, uid, flag, folder = 'INBOX') {
-  const account = getAccounts().find(a => a.id === accountId);
+  const accounts = await getAccountsAsync();
+  const account = accounts.find(a => a.id === accountId);
   if (!account) throw new Error(`Account ${accountId} not found.`);
 
   return new Promise((resolve, reject) => {
@@ -275,7 +281,8 @@ async function flagEmail(accountId, uid, flag, folder = 'INBOX') {
 
 // ─── Search emails ─────────────────────────────────────
 async function searchEmails(accountId, query, folder = 'INBOX') {
-  const account = getAccounts().find(a => a.id === accountId);
+  const accounts = await getAccountsAsync();
+  const account = accounts.find(a => a.id === accountId);
   if (!account) throw new Error(`Account ${accountId} not found.`);
 
   return new Promise((resolve, reject) => {
@@ -319,7 +326,8 @@ async function searchEmails(accountId, query, folder = 'INBOX') {
 
 // ─── Get folder list ───────────────────────────────────
 async function getFolders(accountId) {
-  const account = getAccounts().find(a => a.id === accountId);
+  const accounts = await getAccountsAsync();
+  const account = accounts.find(a => a.id === accountId);
   if (!account) throw new Error(`Account ${accountId} not found.`);
 
   return new Promise((resolve, reject) => {

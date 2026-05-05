@@ -216,11 +216,11 @@ export default function EmailTab() {
   const loadAccounts = useCallback(() => {
     emailAPI.getAccounts().then(accs => {
       setAccounts(accs);
-      if (accs.length && !activeAccount) setActiveAccount(accs[0].id);
+      if (accs.length) setActiveAccount(prev => prev || accs[0].id);
     }).catch(console.error);
-  }, [activeAccount]);
+  }, []);
 
-  useEffect(() => { loadAccounts(); }, []);
+  useEffect(() => { loadAccounts(); }, [loadAccounts]);
 
   async function handleDeleteAccount(id) {
     if (!window.confirm('Remove this email account?')) return;
