@@ -153,13 +153,7 @@ async function createClient(accountId, io) {
     markOnlineOnConnect: true,
     connectTimeoutMs: 60_000,
     keepAliveIntervalMs: 25_000,
-    // Required for history sync — Baileys calls this to decrypt older messages
-    getMessage: async (key) => {
-      const jid = key.remoteJid;
-      const msgs = msgMap[accountId]?.get(jid) || [];
-      const found = msgs.find(m => m.key.id === key.id);
-      return found?.message || { conversation: '' };
-    },
+
   });
 
   clients[accountId] = sock;
@@ -181,7 +175,7 @@ async function createClient(accountId, io) {
       emitStatus(io, accountId, { status: 'ready', phone, name });
 
       // Push chats at intervals — history sync can take time
-      [1000, 3000, 6000, 12000, 25000, 45000].forEach(delay => {
+      [2000, 5000, 10000, 20000].forEach(delay => {
         setTimeout(() => pushChats(), delay);
       });
     }

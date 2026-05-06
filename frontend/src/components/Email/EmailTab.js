@@ -39,6 +39,7 @@ function AddAccountModal({ type, onClose, onSaved }) {
   const [error, setError]       = useState('');
 
   const isGmail    = type === 'gmail';
+  const isZoho     = type === 'zoho';
   const brandColor = isGmail ? '#EA4335' : '#E05D2E';
   const brandName  = isGmail ? 'Gmail' : 'Zoho Mail';
   const set        = k => e => { setForm(p => ({ ...p, [k]: e.target.value })); setTestResult(null); setError(''); };
@@ -56,7 +57,8 @@ function AddAccountModal({ type, onClose, onSaved }) {
   }
 
   async function handleSave() {
-    if (!form.label || !form.user || !form.password) { setError('All fields are required.'); return; }
+    if (!form.label || !form.user) { setError('Label and email are required.'); return; }
+    if (!isZoho && !form.password) { setError('Password is required.'); return; }
     setSaving(true); setError('');
     try {
       await emailAPI.addAccount({ ...form, type, zohoRegion: form.zohoRegion });
@@ -99,22 +101,16 @@ function AddAccountModal({ type, onClose, onSaved }) {
             <label style={lbl}>Email address</label>
             <input style={inp} type="email" placeholder={isGmail ? 'you@gmail.com' : 'you@zohomail.com'} value={form.user} onChange={set('user')} />
           </div>
-          <div style={fieldCol}>
-            <label style={lbl}>{isGmail ? 'App Password' : 'Password'}</label>
-            <input style={inp} type="password" placeholder="••••••••••••••••" value={form.password} onChange={set('password')} />
-          </div>
-          {!isGmail && (
+          {!isZoho && (
             <div style={fieldCol}>
-              <label style={lbl}>Zoho Region</label>
-              <select style={inp} value={form.zohoRegion} onChange={set('zohoRegion')}>
-                <option value="in">India (zoho.in) — imappro.zoho.in</option>
-                <option value="com">Global (zoho.com) — imap.zoho.com</option>
-                <option value="eu">Europe (zoho.eu) — imap.zoho.eu</option>
-                <option value="au">Australia (zoho.com.au) — imap.zoho.com.au</option>
-              </select>
-              <span style={{ fontSize: 11, color: 'var(--text3)', marginTop: 3 }}>
-                Choose based on where your Zoho account was created, not your email domain.
-              </span>
+              <label style={lbl}>{isGmail ? 'App Password' : 'Password'}</label>
+              <input style={inp} type="password" placeholder="••••••••••••••••" value={form.password} onChange={set('password')} />
+            </div>
+          )}
+          {isZoho && (
+            <div style={{ background: '#fff8f0', border: '1px solid #fed7aa', borderRadius: 10, padding: '12px 14px', fontSize: 12.5, color: '#92400e', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              <span style={{ fontSize: 16, flexShrink: 0 }}>ℹ️</span>
+              <span>Zoho uses <strong>OAuth</strong> — no password needed. After saving, click <strong>"Connect Zoho"</strong> to authorise access via your Zoho account.</span>
             </div>
           )}
 
@@ -140,9 +136,11 @@ function AddAccountModal({ type, onClose, onSaved }) {
         {/* Footer */}
         <div style={{ padding: '14px 24px 20px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
           <button onClick={onClose} style={btnGhost}>Cancel</button>
-          <button onClick={handleTest} disabled={testing} style={btnOutline(brandColor)}>
-            {testing ? '⏳ Testing…' : '🔗 Test Connection'}
-          </button>
+          {!isZoho && (
+            <button onClick={handleTest} disabled={testing} style={btnOutline(brandColor)}>
+              {testing ? '⏳ Testing…' : '🔗 Test Connection'}
+            </button>
+          )}
           <button onClick={handleSave} disabled={saving} style={btnFill(brandColor)}>
             {saving ? 'Saving…' : `Add ${brandName}`}
           </button>
@@ -153,7 +151,7 @@ function AddAccountModal({ type, onClose, onSaved }) {
 }
 
 // ── AccountSection ────────────────────────────────────────────────────────────
-function AccountSection({ label, icon, color, accounts, activeAccount, onSelect, onDelete, onAdd, noBorderRight }) {
+function AccountSection({ label, icon, color, accounts, activeAccount, onSelect, onDelete, onAdd, onConnect, noBorderRight }) {
   return (
     <div style={{ borderRight: noBorderRight ? 'none' : '1px solid var(--border)', minWidth: 230, flexShrink: 0 }}>
       <div style={{ padding: '7px 14px 4px', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -165,29 +163,41 @@ function AccountSection({ label, icon, color, accounts, activeAccount, onSelect,
           <span style={{ fontSize: 12, color: 'var(--text3)', padding: '4px 2px' }}>No accounts added</span>
         )}
         {accounts.map(acc => (
-          <div
-            key={acc.id}
-            onClick={() => onSelect(acc.id)}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 7, padding: '5px 10px 5px 7px',
-              borderRadius: 20, cursor: 'pointer',
-              border: activeAccount === acc.id ? `1.5px solid ${color}` : '1px solid var(--border)',
-              background: activeAccount === acc.id ? `${color}18` : 'var(--bg2)',
-              transition: 'all .15s',
-            }}
-          >
-            <div style={{ width: 22, height: 22, borderRadius: '50%', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#fff', fontWeight: 700, flexShrink: 0 }}>
-              {acc.label[0].toUpperCase()}
+          <div key={acc.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <div
+              onClick={() => onSelect(acc.id)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 7, padding: '5px 10px 5px 7px',
+                borderRadius: 20, cursor: 'pointer',
+                border: activeAccount === acc.id ? `1.5px solid ${color}` : '1px solid var(--border)',
+                background: activeAccount === acc.id ? `${color}18` : 'var(--bg2)',
+                transition: 'all .15s',
+              }}
+            >
+              <div style={{ width: 22, height: 22, borderRadius: '50%', background: (acc.type === 'zoho' && !acc.zohoConnected) ? '#9ca3af' : color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#fff', fontWeight: 700, flexShrink: 0 }}>
+                {acc.label[0].toUpperCase()}
+              </div>
+              <div style={{ textAlign: 'left', minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 12.5, whiteSpace: 'nowrap', color: activeAccount === acc.id ? color : 'var(--text)', display: 'flex', alignItems: 'center', gap: 5 }}>
+                  {acc.label}
+                  {acc.type === 'zoho' && !acc.zohoConnected && <span style={{ fontSize: 9, background: '#fef9c3', color: '#854d0e', border: '1px solid #fde047', borderRadius: 4, padding: '1px 4px', fontWeight: 600 }}>NOT CONNECTED</span>}
+                </div>
+                <div style={{ fontSize: 10.5, color: 'var(--text3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 120 }}>{acc.user}</div>
+              </div>
+              <button
+                onClick={e => { e.stopPropagation(); onDelete(acc.id); }}
+                style={{ marginLeft: 2, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text3)', fontSize: 15, lineHeight: 1, padding: '0 1px' }}
+                title="Remove account"
+              >×</button>
             </div>
-            <div style={{ textAlign: 'left', minWidth: 0 }}>
-              <div style={{ fontWeight: 600, fontSize: 12.5, whiteSpace: 'nowrap', color: activeAccount === acc.id ? color : 'var(--text)' }}>{acc.label}</div>
-              <div style={{ fontSize: 10.5, color: 'var(--text3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 120 }}>{acc.user}</div>
-            </div>
-            <button
-              onClick={e => { e.stopPropagation(); onDelete(acc.id); }}
-              style={{ marginLeft: 2, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text3)', fontSize: 15, lineHeight: 1, padding: '0 1px' }}
-              title="Remove account"
-            >×</button>
+            {acc.type === 'zoho' && !acc.zohoConnected && onConnect && (
+              <button
+                onClick={e => { e.stopPropagation(); onConnect(acc.id); }}
+                style={{ fontSize: 11, padding: '3px 10px', borderRadius: 20, border: `1.5px solid ${color}`, background: 'none', color, cursor: 'pointer', fontWeight: 600, alignSelf: 'flex-start', marginLeft: 4 }}
+              >
+                🔗 Connect Zoho
+              </button>
+            )}
           </div>
         ))}
         <button
@@ -218,6 +228,7 @@ export default function EmailTab() {
   const [emailBody, setEmailBody]         = useState(null);
   const [loadingList, setLoadingList]     = useState(false);
   const [loadingBody, setLoadingBody]     = useState(false);
+  const [fetchError,  setFetchError]      = useState('');
   const [searchQ, setSearchQ]             = useState('');
   const [searchResults, setSearchResults] = useState(null);
   const [composing, setComposing]         = useState(false);
@@ -243,9 +254,31 @@ export default function EmailTab() {
   }, []);
 
   useEffect(() => {
-    // Clean up any duplicate accounts in DB on first load, then reload
     emailAPI.deduplicateAccounts().catch(() => {}).finally(() => loadAccounts());
   }, [loadAccounts]);
+
+  // Listen for Zoho OAuth popup success
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.data?.type === 'ZOHO_AUTH_SUCCESS') {
+        loadAccounts(); // refresh to show connected status
+      }
+      if (e.data?.type === 'ZOHO_AUTH_ERROR') {
+        alert('Zoho connection failed: ' + e.data.error);
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, [loadAccounts]);
+
+  async function connectZoho(accountId) {
+    try {
+      const { url } = await emailAPI.getZohoAuthUrl(accountId);
+      window.open(url, '_blank', 'width=520,height=640');
+    } catch (e) {
+      alert('Could not get Zoho auth URL: ' + (e.response?.data?.error || e.message));
+    }
+  }
 
   async function handleDeleteAccount(id) {
     if (!window.confirm('Remove this email account?')) return;
@@ -265,7 +298,17 @@ export default function EmailTab() {
     try {
       const r = await emailAPI.getMessages(activeAccount, { folder: activeFolder, page, limit: 50 });
       setEmails(r.emails || []); setTotal(r.total || 0);
-    } catch (e) { console.error(e); }
+      setFetchError('');
+    } catch (e) {
+      const data = e.response?.data;
+      if (data?.needsAuth) {
+        setFetchError('ZOHO_NOT_CONNECTED');
+      } else {
+        const msg = data?.error || e.message || 'Failed to load emails';
+        console.error('[Email] fetch error:', msg);
+        setFetchError(msg);
+      }
+    }
     setLoadingList(false);
   }, [activeAccount, activeFolder, page]);
 
@@ -341,6 +384,8 @@ export default function EmailTab() {
   const displayList = searchResults ?? emails;
   const gmailAccs   = accounts.filter(a => a.type === 'gmail');
   const zohoAccs    = accounts.filter(a => a.type === 'zoho');
+  const activeAcc   = accounts.find(a => a.id === activeAccount);
+  const zohoNeedsConnect = activeAcc?.type === 'zoho' && !activeAcc?.zohoConnected;
 
   return (
     <div className="tab-layout">
@@ -377,6 +422,7 @@ export default function EmailTab() {
             onSelect={id => { setActiveAccount(id); setPage(1); setActiveFolder('INBOX'); }}
             onDelete={handleDeleteAccount}
             onAdd={() => setAddModal('zoho')}
+            onConnect={connectZoho}
             noBorderRight
           />
         </div>
@@ -448,8 +494,25 @@ export default function EmailTab() {
           </div>
 
           <div className="panel-scroll">
+            {(fetchError === 'ZOHO_NOT_CONNECTED' || zohoNeedsConnect) && (
+              <div style={{ margin: '12px 14px', padding: '14px', background: '#fff8f0', border: '1px solid #fed7aa', borderRadius: 10, fontSize: 13, color: '#92400e', lineHeight: 1.7 }}>
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>📮 Zoho not connected</div>
+                <div style={{ fontSize: 12.5, marginBottom: 10 }}>Authorise Mycomm to read your Zoho emails via OAuth.</div>
+                <button
+                  onClick={() => connectZoho(activeAccount)}
+                  style={{ padding: '6px 16px', background: '#E05D2E', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13, cursor: 'pointer' }}
+                >
+                  🔗 Connect Zoho Account
+                </button>
+              </div>
+            )}
+            {fetchError && fetchError !== 'ZOHO_NOT_CONNECTED' && !zohoNeedsConnect && (
+              <div style={{ margin: '12px 14px', padding: '10px 14px', background: 'rgba(220,38,38,0.08)', border: '1px solid rgba(220,38,38,0.25)', borderRadius: 8, fontSize: 12.5, color: 'var(--red)', lineHeight: 1.6 }}>
+                ⚠️ {fetchError}
+              </div>
+            )}
             {loadingList && <div style={{ padding: 20, color: 'var(--text3)', textAlign: 'center', fontSize: 13 }}>Loading…</div>}
-            {!loadingList && displayList.length === 0 && (
+            {!loadingList && !fetchError && !zohoNeedsConnect && displayList.length === 0 && (
               <div className="empty-state" style={{ minHeight: 'unset', padding: 30 }}>
                 <div className="empty-icon" style={{ fontSize: 32 }}>📭</div>
                 <div className="empty-sub">No emails here.</div>

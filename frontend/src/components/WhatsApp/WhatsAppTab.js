@@ -62,10 +62,7 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
       }
     };
     const got = await attempt();
-    if (!got) {
-      // WhatsApp history sync can take 30–60s on first connect, retry multiple times
-      [4000, 10000, 20000, 35000].forEach(delay => setTimeout(() => attempt(), delay));
-    }
+    if (!got) setTimeout(() => attempt(), 4000);  // retry once after 4s
   }, []);
 
   // ── Auto-select first ready account (only when none selected) ──
@@ -333,7 +330,6 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
             ))}
           </div>
 
-          {/* Chats list */}
           <div className="section-label">Chats</div>
 
           {/* Non-ready status message (outside scroll so it doesn't eat scroll height) */}

@@ -31,6 +31,7 @@ const safeLoad = (label, fn) => {
 };
 
 safeLoad('Auth routes',      () => app.use('/auth',          require('./routes/auth')));
+safeLoad('Zoho auth routes', () => app.use('/auth/zoho',      require('./routes/zohoAuth')));
 safeLoad('Email routes',     () => app.use('/api/email',     require('./routes/email')));
 safeLoad('Calendar routes',  () => app.use('/api/calendar',  require('./routes/calendar')));
 safeLoad('WhatsApp routes',  () => app.use('/api/whatsapp',  require('./routes/whatsapp')));

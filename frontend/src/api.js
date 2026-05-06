@@ -10,6 +10,7 @@ const api = axios.create({ baseURL: BASE, timeout: 30000 });
 // ─── Email ─────────────────────────────────────────────
 export const emailAPI = {
   getAccounts: () => api.get('/api/email/accounts').then(r => r.data),
+  getZohoAuthUrl: (accountId) => api.get('/api/email/zoho-auth', { params: { accountId } }).then(r => r.data),
   deduplicateAccounts: () => api.post('/api/email/accounts/deduplicate').then(r => r.data),
   addAccount: (data) => api.post('/api/email/accounts', data).then(r => r.data),
   deleteAccount: (accountId) => api.delete(`/api/email/accounts/${accountId}`).then(r => r.data),

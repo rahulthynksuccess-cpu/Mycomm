@@ -1,50 +1,88 @@
 const router = require('express').Router();
 const {
   getAccounts,
-  fetchEmails,
-  fetchEmailBody,
-  sendEmail,
-  deleteEmail,
+  fetchEmails:     imapFetchEmails,
+  fetchEmailBody:  imapFetchEmailBody,
+  sendEmail:       imapSendEmail,
+  deleteEmail:     imapDeleteEmail,
   moveEmail,
   flagEmail,
-  searchEmails,
-  getFolders,
+  searchEmails:    imapSearchEmails,
+  getFolders:      imapGetFolders,
 } = require('../services/email');
 
+const zoho = require('../services/zohoEmail');
 const { pool } = require('../services/db');
 
-// GET /api/email/accounts — list all configured email accounts
-router.get('/accounts', async (req, res) => {
-  // Try DB first, fall back to env var
+// ── Helper: is this a Zoho account? ──────────────────────
+async function getAccount(accountId) {
   if (pool) {
     try {
       const r = await pool.query("SELECT value FROM wa_sessions WHERE account_id = 'system' AND key = 'email_accounts'");
       if (r.rows.length) {
         const accounts = JSON.parse(r.rows[0].value);
-        return res.json(accounts.map(({ id, label, user, type, color }) => ({ id, label, user, type, color })));
+        return accounts.find(a => a.id === accountId) || null;
       }
     } catch (e) {}
   }
-  const accounts = getAccounts().map(({ id, label, user, type, color }) => ({ id, label, user, type, color }));
-  res.json(accounts);
+  return getAccounts().find(a => a.id === accountId) || null;
+}
+
+// ── GET /api/email/accounts ───────────────────────────────
+router.get('/accounts', async (req, res) => {
+  if (pool) {
+    try {
+      const r = await pool.query("SELECT value FROM wa_sessions WHERE account_id = 'system' AND key = 'email_accounts'");
+      if (r.rows.length) {
+        const accounts = JSON.parse(r.rows[0].value);
+        // For Zoho accounts, check if OAuth token exists
+        const result = await Promise.all(accounts.map(async ({ id, label, user, type, color, zohoRegion }) => {
+          const isZoho = type === 'zoho';
+          const zohoConnected = isZoho ? !!(await zoho.loadToken(id)) : null;
+          return { id, label, user, type, color, zohoRegion, ...(isZoho ? { zohoConnected } : {}) };
+        }));
+        return res.json(result);
+      }
+    } catch (e) {}
+  }
+  res.json(getAccounts().map(({ id, label, user, type, color }) => ({ id, label, user, type, color })));
 });
 
-// POST /api/email/accounts — add a new email account
+// ── GET /api/email/zoho-auth?accountId= ──────────────────
+router.get('/zoho-auth', (req, res) => {
+  const { accountId } = req.query;
+  if (!accountId) return res.status(400).json({ error: 'accountId required' });
+  if (!process.env.ZOHO_CLIENT_ID) {
+    return res.status(500).json({ error: 'ZOHO_CLIENT_ID is not set in Railway environment variables.' });
+  }
+  try {
+    const url = zoho.getAuthUrl(accountId);
+    res.json({ url });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/email/accounts ──────────────────────────────
 router.post('/accounts', async (req, res) => {
-  const { id, label, user, password, type, color } = req.body;
-  if (!label || !user || !password || !type) return res.status(400).json({ error: 'Missing required fields' });
+  const { id, label, user, password, type, color, zohoRegion } = req.body;
+  // Zoho accounts via API don't need a password at add time
+  if (!label || !user || !type) return res.status(400).json({ error: 'Missing required fields' });
+  if (type !== 'zoho' && !password) return res.status(400).json({ error: 'Password required for non-Zoho accounts' });
   if (!pool) return res.status(500).json({ error: 'Database not available' });
   try {
-    // Load existing accounts
     let accounts = [];
     const r = await pool.query("SELECT value FROM wa_sessions WHERE account_id = 'system' AND key = 'email_accounts'");
     if (r.rows.length) accounts = JSON.parse(r.rows[0].value);
-    // Prevent duplicate: check if same email+type already exists
     const existing = accounts.find(a => a.user.toLowerCase() === user.toLowerCase() && a.type === type);
     if (existing) return res.status(409).json({ error: `Account ${user} (${type}) is already connected.` });
-    // Add new account
-    const { zohoRegion } = req.body;
-    const newAccount = { id: id || 'email_' + Date.now(), label, user, password, type, color: color || type, zohoRegion: zohoRegion || 'in' };
+    const newAccount = {
+      id: id || 'email_' + Date.now(),
+      label, user, type,
+      color: color || type,
+      zohoRegion: zohoRegion || 'in',
+      ...(password ? { password } : {}),
+    };
     accounts.push(newAccount);
     await pool.query(
       `INSERT INTO wa_sessions (account_id, key, value) VALUES ('system', 'email_accounts', $1)
@@ -57,7 +95,7 @@ router.post('/accounts', async (req, res) => {
   }
 });
 
-// DELETE /api/email/accounts/:accountId — remove an email account
+// ── DELETE /api/email/accounts/:accountId ─────────────────
 router.delete('/accounts/:accountId', async (req, res) => {
   if (!pool) return res.status(500).json({ error: 'Database not available' });
   try {
@@ -69,13 +107,15 @@ router.delete('/accounts/:accountId', async (req, res) => {
        ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value`,
       [JSON.stringify(accounts)]
     );
+    // Also delete Zoho token if present
+    await zoho.deleteToken(req.params.accountId).catch(() => {});
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// POST /api/email/accounts/deduplicate — remove duplicate accounts from DB (one-time cleanup)
+// ── POST /api/email/accounts/deduplicate ──────────────────
 router.post('/accounts/deduplicate', async (req, res) => {
   if (!pool) return res.status(500).json({ error: 'Database not available' });
   try {
@@ -100,23 +140,39 @@ router.post('/accounts/deduplicate', async (req, res) => {
   }
 });
 
-// GET /api/email/:accountId/folders — get folder/label list
+// ── GET /api/email/:accountId/folders ─────────────────────
 router.get('/:accountId/folders', async (req, res) => {
   try {
-    const folders = await getFolders(req.params.accountId);
-    res.json(folders);
+    const account = await getAccount(req.params.accountId);
+    if (account?.type === 'zoho') {
+      const token = await zoho.loadToken(req.params.accountId);
+      if (!token) return res.json([{ name: 'INBOX', label: 'Inbox' }]);
+      return res.json(await zoho.getFolders(req.params.accountId));
+    }
+    res.json(await imapGetFolders(req.params.accountId));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/email/:accountId/messages — list emails
+// ── GET /api/email/:accountId/messages ────────────────────
 router.get('/:accountId/messages', async (req, res) => {
   try {
-    const result = await fetchEmails(req.params.accountId, {
+    const account = await getAccount(req.params.accountId);
+    if (account?.type === 'zoho') {
+      const token = await zoho.loadToken(req.params.accountId);
+      if (!token) return res.status(401).json({ error: 'ZOHO_NOT_CONNECTED', needsAuth: true });
+      const result = await zoho.fetchEmails(req.params.accountId, {
+        folder: req.query.folder || 'INBOX',
+        limit:  parseInt(req.query.limit) || 50,
+        page:   parseInt(req.query.page)  || 1,
+      });
+      return res.json(result);
+    }
+    const result = await imapFetchEmails(req.params.accountId, {
       folder: req.query.folder || 'INBOX',
-      limit: parseInt(req.query.limit) || 50,
-      page: parseInt(req.query.page) || 1,
+      limit:  parseInt(req.query.limit) || 50,
+      page:   parseInt(req.query.page)  || 1,
     });
     res.json(result);
   } catch (err) {
@@ -124,76 +180,86 @@ router.get('/:accountId/messages', async (req, res) => {
   }
 });
 
-// GET /api/email/:accountId/messages/:uid — get full email body
+// ── GET /api/email/:accountId/messages/:uid ───────────────
 router.get('/:accountId/messages/:uid', async (req, res) => {
   try {
-    const email = await fetchEmailBody(
-      req.params.accountId,
-      parseInt(req.params.uid),
-      req.query.folder || 'INBOX'
-    );
-    res.json(email);
+    const account = await getAccount(req.params.accountId);
+    if (account?.type === 'zoho') {
+      return res.json(await zoho.fetchEmailBody(req.params.accountId, req.params.uid, req.query.folder || 'INBOX'));
+    }
+    res.json(await imapFetchEmailBody(req.params.accountId, parseInt(req.params.uid), req.query.folder || 'INBOX'));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/email/:accountId/send — send an email
+// ── POST /api/email/:accountId/send ──────────────────────
 router.post('/:accountId/send', async (req, res) => {
   try {
     const { to, cc, bcc, subject, text, html, replyTo, attachments } = req.body;
     if (!to || !subject) return res.status(400).json({ error: 'to and subject are required.' });
-    const result = await sendEmail(req.params.accountId, { to, cc, bcc, subject, text, html, replyTo, attachments });
+    const account = await getAccount(req.params.accountId);
+    if (account?.type === 'zoho') {
+      return res.json(await zoho.sendEmail(req.params.accountId, { to, cc, bcc, subject, text, html }));
+    }
+    const result = await imapSendEmail(req.params.accountId, { to, cc, bcc, subject, text, html, replyTo, attachments });
     res.json({ success: true, messageId: result.messageId });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// DELETE /api/email/:accountId/messages/:uid — delete email
+// ── DELETE /api/email/:accountId/messages/:uid ────────────
 router.delete('/:accountId/messages/:uid', async (req, res) => {
   try {
-    const result = await deleteEmail(
-      req.params.accountId,
-      parseInt(req.params.uid),
-      req.query.folder || 'INBOX'
-    );
-    res.json(result);
+    const account = await getAccount(req.params.accountId);
+    if (account?.type === 'zoho') {
+      return res.json(await zoho.deleteEmail(req.params.accountId, req.params.uid, req.query.folder || 'INBOX'));
+    }
+    res.json(await imapDeleteEmail(req.params.accountId, parseInt(req.params.uid), req.query.folder || 'INBOX'));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/email/:accountId/messages/:uid/move — move to folder
+// ── POST /api/email/:accountId/messages/:uid/move ─────────
 router.post('/:accountId/messages/:uid/move', async (req, res) => {
   try {
     const { toFolder, fromFolder = 'INBOX' } = req.body;
-    const result = await moveEmail(req.params.accountId, parseInt(req.params.uid), fromFolder, toFolder);
-    res.json(result);
+    res.json(await moveEmail(req.params.accountId, parseInt(req.params.uid), fromFolder, toFolder));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// PATCH /api/email/:accountId/messages/:uid/flag — star/unstar, mark read/unread
+// ── PATCH /api/email/:accountId/messages/:uid/flag ────────
 router.patch('/:accountId/messages/:uid/flag', async (req, res) => {
   try {
     const { flag, folder } = req.body;
-    // flag: { name: '\\Flagged', add: true/false } or { name: '\\Seen', add: true }
-    const result = await flagEmail(req.params.accountId, parseInt(req.params.uid), flag, folder);
-    res.json(result);
+    const account = await getAccount(req.params.accountId);
+    if (account?.type === 'zoho') {
+      // Map flag to Zoho markRead
+      if (flag.name === '\\Seen') {
+        return res.json(await zoho.markRead(req.params.accountId, req.params.uid, flag.add));
+      }
+      return res.json({ success: true }); // other flags not supported via API
+    }
+    res.json(await flagEmail(req.params.accountId, parseInt(req.params.uid), flag, folder));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/email/:accountId/search — search emails
+// ── GET /api/email/:accountId/search ─────────────────────
 router.get('/:accountId/search', async (req, res) => {
   try {
     const { q, folder } = req.query;
     if (!q) return res.status(400).json({ error: 'q param required.' });
-    const results = await searchEmails(req.params.accountId, q, folder || 'INBOX');
-    res.json(results);
+    const account = await getAccount(req.params.accountId);
+    if (account?.type === 'zoho') {
+      return res.json(await zoho.searchEmails(req.params.accountId, q, folder || 'INBOX'));
+    }
+    res.json(await imapSearchEmails(req.params.accountId, q, folder || 'INBOX'));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
