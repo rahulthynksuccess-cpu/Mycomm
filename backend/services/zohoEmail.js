@@ -1,10 +1,6 @@
 /**
- * Zoho Mail API service — uses OAuth2 (no IMAP needed, works on free plan)
- * 
- * Setup needed in Railway env vars:
- *   ZOHO_CLIENT_ID      — from api-console.zoho.in
- *   ZOHO_CLIENT_SECRET  — from api-console.zoho.in
- *   ZOHO_REDIRECT_URI   — e.g. https://yourapp.up.railway.app/auth/zoho/callback
+ * Zoho Mail API service — OAuth2, no IMAP needed (works on free plan)
+ * Uses Zoho Mail API v1: https://www.zoho.com/mail/help/api/
  */
 
 const axios = require('axios');
@@ -13,10 +9,8 @@ const { pool } = require('./db');
 const ZOHO_CLIENT_ID     = process.env.ZOHO_CLIENT_ID;
 const ZOHO_CLIENT_SECRET = process.env.ZOHO_CLIENT_SECRET;
 const ZOHO_REDIRECT_URI  = process.env.ZOHO_REDIRECT_URI;
-
-// Zoho India API base (handles .in domains and custom domains on Zoho India)
-const ZOHO_ACCOUNTS_URL = 'https://accounts.zoho.in';
-const ZOHO_MAIL_API     = 'https://mail.zoho.in/api';
+const ZOHO_ACCOUNTS_URL  = 'https://accounts.zoho.in';
+const ZOHO_API_BASE      = 'https://mail.zoho.in/api/accounts';
 
 // ── Token storage ─────────────────────────────────────
 
@@ -42,10 +36,12 @@ async function loadToken(accountId) {
 
 async function deleteToken(accountId) {
   if (!pool) return;
-  await pool.query(
-    "DELETE FROM wa_sessions WHERE account_id = $1 AND key = 'zoho_token'",
-    [accountId]
-  );
+  try {
+    await pool.query(
+      "DELETE FROM wa_sessions WHERE account_id = $1 AND key = 'zoho_token'",
+      [accountId]
+    );
+  } catch (e) {}
 }
 
 // ── OAuth URL ─────────────────────────────────────────
@@ -76,10 +72,11 @@ async function exchangeCode(code) {
       code,
     },
   });
-  return r.data; // { access_token, refresh_token, expires_in, ... }
+  if (r.data.error) throw new Error(r.data.error);
+  return r.data;
 }
 
-async function refreshToken(token) {
+async function refreshAccessToken(token) {
   const r = await axios.post(`${ZOHO_ACCOUNTS_URL}/oauth/v2/token`, null, {
     params: {
       grant_type:    'refresh_token',
@@ -88,52 +85,82 @@ async function refreshToken(token) {
       refresh_token: token.refresh_token,
     },
   });
+  if (r.data.error) throw new Error('Token refresh failed: ' + r.data.error);
   return { ...token, access_token: r.data.access_token, obtained_at: Date.now() };
 }
 
 async function getValidToken(accountId) {
   let token = await loadToken(accountId);
   if (!token) throw new Error('ZOHO_NOT_CONNECTED');
+  if (!token.access_token) throw new Error('ZOHO_NOT_CONNECTED');
   // Refresh if within 5 min of expiry
   const expiresAt = (token.obtained_at || 0) + (token.expires_in || 3600) * 1000;
   if (Date.now() > expiresAt - 5 * 60 * 1000) {
-    token = await refreshToken(token);
-    await saveToken(accountId, { ...token, obtained_at: Date.now() });
+    token = await refreshAccessToken(token);
+    await saveToken(accountId, token);
   }
   return token;
 }
 
-// ── Zoho account ID lookup ────────────────────────────
-// Zoho API needs the internal accountId (not email), cache it
+// ── Zoho internal account ID ──────────────────────────
+// Zoho API requires the internal numeric accountId, not the email address
+const _zohoAccIdCache = {};
 
-const _zohoAccountIdCache = {};
-
-async function getZohoAccountId(accountId, accessToken) {
-  if (_zohoAccountIdCache[accountId]) return _zohoAccountIdCache[accountId];
-  const r = await axios.get(`${ZOHO_MAIL_API}/accounts`, {
-    headers: { Authorization: `Zoho-oauthtoken ${accessToken}` },
-  });
-  const accounts = r.data?.data || [];
-  const acc = accounts[0]; // primary account
-  if (!acc) throw new Error('No Zoho mail account found');
-  _zohoAccountIdCache[accountId] = acc.accountId;
-  return acc.accountId;
+async function getZohoAccId(accountId, accessToken) {
+  if (_zohoAccIdCache[accountId]) return _zohoAccIdCache[accountId];
+  try {
+    const r = await axios.get('https://mail.zoho.in/api/accounts', {
+      headers: { Authorization: `Zoho-oauthtoken ${accessToken}` },
+    });
+    const data = r.data?.data;
+    if (!data || !data.length) throw new Error('No Zoho account data returned');
+    // data is array of accounts — take first (primary)
+    const zohoAccId = data[0].accountId;
+    if (!zohoAccId) throw new Error('accountId missing from Zoho response: ' + JSON.stringify(data[0]));
+    _zohoAccIdCache[accountId] = zohoAccId;
+    return zohoAccId;
+  } catch (e) {
+    // Log full error for debugging
+    if (e.response) {
+      throw new Error(`Zoho accounts API error ${e.response.status}: ${JSON.stringify(e.response.data)}`);
+    }
+    throw e;
+  }
 }
 
-// ── Mail API calls ────────────────────────────────────
+// ── Helper: axios with better error messages ──────────
+async function zohoGet(url, accessToken, params = {}) {
+  try {
+    const r = await axios.get(url, {
+      headers: { Authorization: `Zoho-oauthtoken ${accessToken}` },
+      params,
+    });
+    return r.data;
+  } catch (e) {
+    const status = e.response?.status;
+    const body   = JSON.stringify(e.response?.data || {});
+    throw new Error(`Zoho API ${status} at ${url}: ${body}`);
+  }
+}
+
+// ── Mail API ──────────────────────────────────────────
 
 async function fetchEmails(accountId, options = {}) {
   const { folder = 'INBOX', limit = 50, page = 1 } = options;
-  const token = await getValidToken(accountId);
-  const zohoAccId = await getZohoAccountId(accountId, token.access_token);
+  const token     = await getValidToken(accountId);
+  const zohoAccId = await getZohoAccId(accountId, token.access_token);
 
+  // Zoho Mail API: GET /accounts/{accountId}/messages/view
+  // Required params: limit, start (0-based offset)
+  // Optional: folderId or folderpath
   const start = (page - 1) * limit;
-  const r = await axios.get(`${ZOHO_MAIL_API}/accounts/${zohoAccId}/messages/view`, {
-    headers: { Authorization: `Zoho-oauthtoken ${token.access_token}` },
-    params: { foldername: folder, limit, start },
-  });
+  const data = await zohoGet(
+    `${ZOHO_API_BASE}/${zohoAccId}/messages/view`,
+    token.access_token,
+    { limit, start, sortorder: 'false' } // sortorder false = newest first
+  );
 
-  const emails = (r.data?.data || []).map(m => ({
+  const emails = (data?.data || []).map(m => ({
     uid:       m.messageId,
     seqno:     m.messageId,
     accountId,
@@ -141,62 +168,76 @@ async function fetchEmails(accountId, options = {}) {
     from:      m.fromAddress || '',
     to:        m.toAddress   || '',
     subject:   m.subject     || '(No Subject)',
-    date:      new Date(parseInt(m.receivedTime)),
-    snippet:   m.summary    || '',
+    date:      m.receivedTime ? new Date(parseInt(m.receivedTime)) : new Date(),
+    snippet:   m.summary     || '',
     isRead:    m.isRead === '1' || m.isRead === true,
-    isStarred: m.isFlagged  === '1' || m.isFlagged === true,
+    isStarred: m.isFlagged   === '1' || m.isFlagged === true,
     flags:     [],
   }));
 
-  return { emails, total: r.data?.totalCount || emails.length, folder };
+  return { emails, total: data?.totalCount || emails.length, folder };
 }
 
 async function fetchEmailBody(accountId, messageId, folder = 'INBOX') {
-  const token = await getValidToken(accountId);
-  const zohoAccId = await getZohoAccountId(accountId, token.access_token);
+  const token     = await getValidToken(accountId);
+  const zohoAccId = await getZohoAccId(accountId, token.access_token);
 
-  const r = await axios.get(`${ZOHO_MAIL_API}/accounts/${zohoAccId}/messages/${messageId}/content`, {
-    headers: { Authorization: `Zoho-oauthtoken ${token.access_token}` },
-  });
+  const data = await zohoGet(
+    `${ZOHO_API_BASE}/${zohoAccId}/messages/${messageId}/content`,
+    token.access_token
+  );
 
-  const d = r.data?.data || {};
+  const d = data?.data || {};
   return {
-    uid:      messageId,
-    from:     d.fromAddress || '',
-    to:       d.toAddress   || '',
-    cc:       d.ccAddress   || '',
-    subject:  d.subject     || '',
-    date:     d.receivedTime ? new Date(parseInt(d.receivedTime)) : null,
-    htmlBody: d.htmlBody    || d.content || '',
-    textBody: d.textBody    || '',
+    uid:         messageId,
+    from:        d.fromAddress || '',
+    to:          d.toAddress   || '',
+    cc:          d.ccAddress   || '',
+    subject:     d.subject     || '',
+    date:        d.receivedTime ? new Date(parseInt(d.receivedTime)) : null,
+    htmlBody:    d.htmlBody    || d.content || '',
+    textBody:    d.textBody    || '',
     attachments: (d.attachments || []).map(a => ({
       filename:    a.attachmentName,
-      contentType: a.type,
+      contentType: a.type || 'application/octet-stream',
       size:        a.attachmentSize,
     })),
   };
 }
 
 async function sendEmail(accountId, { to, cc, bcc, subject, text, html }) {
-  const token = await getValidToken(accountId);
-  const zohoAccId = await getZohoAccountId(accountId, token.access_token);
+  const token     = await getValidToken(accountId);
+  const zohoAccId = await getZohoAccId(accountId, token.access_token);
 
-  const r = await axios.post(`${ZOHO_MAIL_API}/accounts/${zohoAccId}/messages`,
-    { toAddress: to, ccAddress: cc, bccAddress: bcc, subject, content: html || text, mailFormat: html ? 'html' : 'plaintext' },
-    { headers: { Authorization: `Zoho-oauthtoken ${token.access_token}` } }
-  );
-  return { success: true, messageId: r.data?.data?.messageId };
+  try {
+    const r = await axios.post(
+      `${ZOHO_API_BASE}/${zohoAccId}/messages`,
+      {
+        toAddress:   to,
+        ccAddress:   cc  || '',
+        bccAddress:  bcc || '',
+        subject:     subject,
+        content:     html || text,
+        mailFormat:  html ? 'html' : 'plaintext',
+      },
+      { headers: { Authorization: `Zoho-oauthtoken ${token.access_token}` } }
+    );
+    return { success: true, messageId: r.data?.data?.messageId };
+  } catch (e) {
+    throw new Error(`Send failed ${e.response?.status}: ${JSON.stringify(e.response?.data)}`);
+  }
 }
 
 async function getFolders(accountId) {
-  const token = await getValidToken(accountId);
-  const zohoAccId = await getZohoAccountId(accountId, token.access_token);
+  const token     = await getValidToken(accountId);
+  const zohoAccId = await getZohoAccId(accountId, token.access_token);
 
-  const r = await axios.get(`${ZOHO_MAIL_API}/accounts/${zohoAccId}/folders`, {
-    headers: { Authorization: `Zoho-oauthtoken ${token.access_token}` },
-  });
+  const data = await zohoGet(
+    `${ZOHO_API_BASE}/${zohoAccId}/folders`,
+    token.access_token
+  );
 
-  return (r.data?.data || []).map(f => ({
+  return (data?.data || []).map(f => ({
     name:  f.folderName,
     label: f.folderName,
     path:  f.path || f.folderName,
@@ -204,50 +245,55 @@ async function getFolders(accountId) {
 }
 
 async function deleteEmail(accountId, messageId, folder = 'INBOX') {
-  const token = await getValidToken(accountId);
-  const zohoAccId = await getZohoAccountId(accountId, token.access_token);
+  const token     = await getValidToken(accountId);
+  const zohoAccId = await getZohoAccId(accountId, token.access_token);
 
-  await axios.delete(`${ZOHO_MAIL_API}/accounts/${zohoAccId}/messages`,
-    {
-      headers: { Authorization: `Zoho-oauthtoken ${token.access_token}` },
-      data: { messageId: [String(messageId)], folderId: folder },
-    }
-  );
+  try {
+    await axios.delete(
+      `${ZOHO_API_BASE}/${zohoAccId}/messages`,
+      {
+        headers: { Authorization: `Zoho-oauthtoken ${token.access_token}` },
+        data: { messageId: [String(messageId)] },
+      }
+    );
+  } catch (e) {
+    throw new Error(`Delete failed ${e.response?.status}: ${JSON.stringify(e.response?.data)}`);
+  }
   return { deleted: true, uid: messageId };
 }
 
 async function markRead(accountId, messageId, isRead = true) {
-  const token = await getValidToken(accountId);
-  const zohoAccId = await getZohoAccountId(accountId, token.access_token);
+  const token     = await getValidToken(accountId);
+  const zohoAccId = await getZohoAccId(accountId, token.access_token);
 
-  await axios.put(`${ZOHO_MAIL_API}/accounts/${zohoAccId}/updatemessage`,
-    { messageId: [String(messageId)], isRead: isRead ? '1' : '0' },
-    { headers: { Authorization: `Zoho-oauthtoken ${token.access_token}` } }
-  );
+  try {
+    await axios.put(
+      `${ZOHO_API_BASE}/${zohoAccId}/updatemessage`,
+      { messageId: [String(messageId)], isRead: isRead ? '1' : '0' },
+      { headers: { Authorization: `Zoho-oauthtoken ${token.access_token}` } }
+    );
+  } catch (e) {}
   return { success: true };
 }
 
 async function searchEmails(accountId, query, folder = 'INBOX') {
-  const token = await getValidToken(accountId);
-  const zohoAccId = await getZohoAccountId(accountId, token.access_token);
+  const token     = await getValidToken(accountId);
+  const zohoAccId = await getZohoAccId(accountId, token.access_token);
 
-  const r = await axios.get(`${ZOHO_MAIL_API}/accounts/${zohoAccId}/messages/search`, {
-    headers: { Authorization: `Zoho-oauthtoken ${token.access_token}` },
-    params: { searchKey: query, foldername: folder, limit: 30 },
-  });
+  const data = await zohoGet(
+    `${ZOHO_API_BASE}/${zohoAccId}/messages/search`,
+    token.access_token,
+    { searchKey: query, limit: 30, start: 0 }
+  );
 
-  return (r.data?.data || []).map(m => ({
+  return (data?.data || []).map(m => ({
     uid:     m.messageId,
     from:    m.fromAddress || '',
-    subject: m.subject || '',
+    subject: m.subject     || '',
     date:    m.receivedTime ? new Date(parseInt(m.receivedTime)) : null,
+    snippet: m.summary     || '',
     accountId,
   }));
-}
-
-function getConnectedAccounts() {
-  // Returns list of accountIds that have tokens — called synchronously so returns cached data
-  return Object.keys(_zohoAccountIdCache);
 }
 
 module.exports = {
@@ -263,5 +309,4 @@ module.exports = {
   deleteEmail,
   markRead,
   searchEmails,
-  getConnectedAccounts,
 };
