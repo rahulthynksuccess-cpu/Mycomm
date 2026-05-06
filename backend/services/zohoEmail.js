@@ -131,22 +131,42 @@ async function getZohoAccId(accountId, accessToken) {
       } catch (e) {}
     }
 
+    // Log full response once for debugging
+    console.log('[Zoho] accounts response sample:', JSON.stringify(data[0]).slice(0, 300));
+
+    // Safe string extractor — handles string, array, or object
+    function toStr(val) {
+      if (!val) return '';
+      if (typeof val === 'string') return val.toLowerCase();
+      if (Array.isArray(val)) return val.map(toStr).join(',');
+      if (typeof val === 'object') return Object.values(val).map(toStr).join(',');
+      return String(val).toLowerCase();
+    }
+
     // Match by email address — strict match only, no fallback to wrong account
     let matched = null;
     if (emailAddress) {
-      matched = data.find(a =>
-        (a.emailAddress || '').toLowerCase() === emailAddress ||
-        (a.primaryEmailAddress || '').toLowerCase() === emailAddress ||
-        (a.sendMailDetails || []).some(s => (s.fromAddress || '').toLowerCase() === emailAddress)
-      );
+      matched = data.find(a => {
+        const fields = [
+          toStr(a.emailAddress),
+          toStr(a.primaryEmailAddress),
+          toStr(a.incomingUserName),
+          toStr(a.mailboxAddress),
+          ...(Array.isArray(a.sendMailDetails) ? a.sendMailDetails.map(s => toStr(s.fromAddress)) : []),
+        ];
+        return fields.some(f => f.includes(emailAddress));
+      });
     }
-    // Only fall back to first account if there's only 1 account (single-user Zoho org)
+    // Only fall back to first account if single account in org
     if (!matched && data.length === 1) matched = data[0];
-    if (!matched) throw new Error(`No Zoho account found matching email: ${emailAddress}. Available: ${data.map(a => a.emailAddress).join(', ')}`);
+    if (!matched) {
+      const available = data.map(a => toStr(a.emailAddress) || toStr(a.incomingUserName) || a.accountId).join(', ');
+      throw new Error(`No Zoho account matched ${emailAddress}. Available: ${available}`);
+    }
 
     const zohoAccId = matched.accountId;
-    if (!zohoAccId) throw new Error('accountId missing from Zoho response: ' + JSON.stringify(matched));
-    console.log(`[Zoho] Mapped accountId ${accountId} (${emailAddress}) → Zoho accountId ${zohoAccId}`);
+    if (!zohoAccId) throw new Error('accountId missing from Zoho response: ' + JSON.stringify(matched).slice(0, 200));
+    console.log(`[Zoho] Mapped ${accountId} (${emailAddress}) → Zoho accountId ${zohoAccId}`);
     _zohoAccIdCache[accountId] = zohoAccId;
     return zohoAccId;
   } catch (e) {
