@@ -11,6 +11,7 @@ const ZOHO_CLIENT_SECRET = process.env.ZOHO_CLIENT_SECRET;
 const ZOHO_REDIRECT_URI  = process.env.ZOHO_REDIRECT_URI;
 const ZOHO_ACCOUNTS_URL  = 'https://accounts.zoho.in';
 const ZOHO_API_BASE      = 'https://mail.zoho.in/api/accounts';
+const _zohoAccIdCache    = {}; // cache: our accountId → Zoho internal accountId
 
 // ── Token storage ─────────────────────────────────────
 
@@ -21,6 +22,8 @@ async function saveToken(accountId, token) {
      ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value`,
     [accountId, JSON.stringify(token)]
   );
+  // Clear cached Zoho account ID so it's re-fetched with the new token
+  delete _zohoAccIdCache[accountId];
 }
 
 async function loadToken(accountId) {
@@ -42,6 +45,7 @@ async function deleteToken(accountId) {
       [accountId]
     );
   } catch (e) {}
+  delete _zohoAccIdCache[accountId];
 }
 
 // ── OAuth URL ─────────────────────────────────────────
@@ -104,7 +108,6 @@ async function getValidToken(accountId) {
 
 // ── Zoho internal account ID ──────────────────────────
 // Zoho API requires the internal numeric accountId, not the email address
-const _zohoAccIdCache = {};
 
 async function getZohoAccId(accountId, accessToken) {
   if (_zohoAccIdCache[accountId]) return _zohoAccIdCache[accountId];
@@ -114,13 +117,39 @@ async function getZohoAccId(accountId, accessToken) {
     });
     const data = r.data?.data;
     if (!data || !data.length) throw new Error('No Zoho account data returned');
-    // data is array of accounts — take first (primary)
-    const zohoAccId = data[0].accountId;
-    if (!zohoAccId) throw new Error('accountId missing from Zoho response: ' + JSON.stringify(data[0]));
+
+    // Get the email address for this accountId from DB so we match the right Zoho account
+    let emailAddress = null;
+    if (pool) {
+      try {
+        const r2 = await pool.query("SELECT value FROM wa_sessions WHERE account_id = 'system' AND key = 'email_accounts'");
+        if (r2.rows.length) {
+          const accounts = JSON.parse(r2.rows[0].value);
+          const acc = accounts.find(a => a.id === accountId);
+          if (acc) emailAddress = acc.user.toLowerCase();
+        }
+      } catch (e) {}
+    }
+
+    // Match by email address — strict match only, no fallback to wrong account
+    let matched = null;
+    if (emailAddress) {
+      matched = data.find(a =>
+        (a.emailAddress || '').toLowerCase() === emailAddress ||
+        (a.primaryEmailAddress || '').toLowerCase() === emailAddress ||
+        (a.sendMailDetails || []).some(s => (s.fromAddress || '').toLowerCase() === emailAddress)
+      );
+    }
+    // Only fall back to first account if there's only 1 account (single-user Zoho org)
+    if (!matched && data.length === 1) matched = data[0];
+    if (!matched) throw new Error(`No Zoho account found matching email: ${emailAddress}. Available: ${data.map(a => a.emailAddress).join(', ')}`);
+
+    const zohoAccId = matched.accountId;
+    if (!zohoAccId) throw new Error('accountId missing from Zoho response: ' + JSON.stringify(matched));
+    console.log(`[Zoho] Mapped accountId ${accountId} (${emailAddress}) → Zoho accountId ${zohoAccId}`);
     _zohoAccIdCache[accountId] = zohoAccId;
     return zohoAccId;
   } catch (e) {
-    // Log full error for debugging
     if (e.response) {
       throw new Error(`Zoho accounts API error ${e.response.status}: ${JSON.stringify(e.response.data)}`);
     }
@@ -188,19 +217,25 @@ async function fetchEmailBody(accountId, messageId, folder = 'INBOX') {
   );
 
   const d = data?.data || {};
+  // Zoho API returns body in 'content' field; mailFormat can be 'html','HTML','plaintext' etc.
+  const isHtml = d.htmlBody ||
+    (d.mailFormat || '').toLowerCase().includes('html') ||
+    (d.content || '').trimStart().startsWith('<');
+  const htmlBody = d.htmlBody || (isHtml ? (d.content || '') : '');
+  const textBody = d.textBody || (!isHtml ? (d.content || '') : '');
   return {
     uid:         messageId,
-    from:        d.fromAddress || '',
-    to:          d.toAddress   || '',
-    cc:          d.ccAddress   || '',
+    from:        d.fromAddress || d.from || '',
+    to:          d.toAddress   || d.to   || '',
+    cc:          d.ccAddress   || d.cc   || '',
     subject:     d.subject     || '',
     date:        d.receivedTime ? new Date(parseInt(d.receivedTime)) : null,
-    htmlBody:    d.htmlBody    || d.content || '',
-    textBody:    d.textBody    || '',
+    htmlBody,
+    textBody,
     attachments: (d.attachments || []).map(a => ({
-      filename:    a.attachmentName,
-      contentType: a.type || 'application/octet-stream',
-      size:        a.attachmentSize,
+      filename:    a.attachmentName || a.fileName || '',
+      contentType: a.type || a.contentType || 'application/octet-stream',
+      size:        a.attachmentSize || a.size || 0,
     })),
   };
 }

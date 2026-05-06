@@ -583,8 +583,10 @@ export default function EmailTab() {
                 {loadingBody && <div style={{ padding: 24, color: 'var(--text3)', textAlign: 'center' }}>Loading…</div>}
                 {emailBody && (
                   emailBody.htmlBody
-                    ? <iframe srcDoc={emailBody.htmlBody} title="email" style={{ width: '100%', height: '100%', minHeight: 400, border: 'none', background: '#fff' }} sandbox="allow-same-origin" />
-                    : <div style={{ padding: 22, color: 'var(--text)', lineHeight: 1.7, fontSize: 14, whiteSpace: 'pre-wrap' }}>{emailBody.textBody}</div>
+                    ? <iframe srcDoc={emailBody.htmlBody} title="email" style={{ width: '100%', height: '100%', minHeight: 400, border: 'none', background: '#fff' }} sandbox="allow-same-origin allow-popups" />
+                    : <div style={{ padding: 22, color: 'var(--text)', lineHeight: 1.7, fontSize: 14, whiteSpace: 'pre-wrap' }}>
+                        {emailBody.textBody || emailBody.snippet || '(No content)'}
+                      </div>
                 )}
                 {emailBody?.attachments?.length > 0 && (
                   <div style={{ padding: '12px 22px', borderTop: '1px solid var(--border)' }}>
