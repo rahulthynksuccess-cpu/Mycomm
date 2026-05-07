@@ -1,8 +1,8 @@
 // File: backend/services/whatsapp.js
 
 /**
- * WhatsApp service — @whiskeysockets/baileys
- * FINAL STABLE VERSION
+ * FINAL STABLE WhatsApp Service
+ * Compatible with Railway + Baileys + Multi Account
  */
 
 const {
@@ -144,7 +144,7 @@ function buildChatList(accountId, limit = 5000) {
 }
 
 async function createClient(accountId, io) {
-  // Prevent duplicate sessions
+  // Prevent duplicate clients
   if (clients[accountId]) {
     console.log(
       `[WA] Client already exists for ${accountId}`
@@ -192,7 +192,9 @@ async function createClient(accountId, io) {
     );
 
     if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+      fs.mkdirSync(dir, {
+        recursive: true,
+      });
     }
 
     ({
@@ -216,6 +218,7 @@ async function createClient(accountId, io) {
 
     auth: {
       creds: state.creds,
+
       keys: makeCacheableSignalKeyStore(
         state.keys,
         logger
@@ -255,6 +258,7 @@ async function createClient(accountId, io) {
           `
           INSERT INTO wa_sessions
           (account_id, key, value)
+
           VALUES ($1, 'chats_cache', $2)
 
           ON CONFLICT (account_id, key)
@@ -316,24 +320,19 @@ async function createClient(accountId, io) {
           name,
         });
 
-        // Push repeatedly while sync completes
-        [2000, 5000, 10000, 20000, 30000].forEach(
-          delay => {
+        [2000, 5000, 10000, 20000, 30000]
+          .forEach(delay => {
             setTimeout(() => {
               pushChats();
             }, delay);
-          }
-        );
+          });
 
-        // Force chat sync
         setTimeout(async () => {
           try {
-            const chats =
-              await sock.fetchAllParticipating();
+            await sock.fetchAllParticipating();
 
             console.log(
-              `[WA] Full sync for ${accountId}:`,
-              Object.keys(chats || {}).length
+              `[WA] Full sync complete for ${accountId}`
             );
 
             pushChats();
@@ -372,6 +371,7 @@ async function createClient(accountId, io) {
 
           emitStatus(io, accountId, {
             status: 'auth_failure',
+
             error: loggedOut
               ? 'Logged out from phone'
               : 'Bad session — re-scan QR',
@@ -382,7 +382,6 @@ async function createClient(accountId, io) {
             reason: String(statusCode),
           });
 
-          // Auto reconnect
           setTimeout(() => {
             if (!clients[accountId]) {
               createClient(
@@ -396,7 +395,10 @@ async function createClient(accountId, io) {
     }
   );
 
-  sock.ev.on('creds.update', saveCreds);
+  sock.ev.on(
+    'creds.update',
+    saveCreds
+  );
 
   sock.ev.on(
     'messages.upsert',
@@ -454,22 +456,14 @@ function listStoredSessions() {
         return false;
       }
 
-      const accountId = d.replace(
-        'session-',
-        ''
-      );
+      const accountId =
+        d.replace('session-', '');
 
-      // Ignore temp numeric folders
-      if (/^\d+$/.test(accountId)) {
-        return false;
-      }
-
-      // Ignore broken folders
+      // Ignore invalid folders only
       if (
         !accountId ||
         accountId === 'undefined' ||
-        accountId === 'null' ||
-        accountId.length < 5
+        accountId === 'null'
       ) {
         return false;
       }
@@ -482,7 +476,9 @@ function listStoredSessions() {
         )
       );
     })
-    .map(d => d.replace('session-', ''));
+    .map(d =>
+      d.replace('session-', '')
+    );
 }
 
 module.exports = {
