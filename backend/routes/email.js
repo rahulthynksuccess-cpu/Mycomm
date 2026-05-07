@@ -74,14 +74,13 @@ router.get('/zoho-debug', async (req, res) => {
 });
 
 // ── GET /api/email/zoho-auth?accountId= ──────────────────
-router.get('/zoho-auth', (req, res) => {
+router.get('/zoho-auth', async (req, res) => {
   const { accountId } = req.query;
   if (!accountId) return res.status(400).json({ error: 'accountId required' });
   if (!process.env.ZOHO_CLIENT_ID) {
     return res.status(500).json({ error: 'ZOHO_CLIENT_ID is not set in Railway environment variables.' });
   }
   try {
-    // Pass the email address as login_hint so Zoho pre-fills the correct account
     const account = await getAccount(accountId);
     const emailHint = account?.user || null;
     const url = zoho.getAuthUrl(accountId, emailHint);
