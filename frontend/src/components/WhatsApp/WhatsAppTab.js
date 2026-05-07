@@ -58,32 +58,22 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
   },[pushedChats]);
 
   // ── Derived ────────────────────────────────────────
-const allAccounts = Object.entries(statuses || {})
-  .filter(([id]) => isNaN(Number(id)));
+  const allAccounts  = Object.entries(statuses);
   const currentChats = activeAccount?(chats[activeAccount]||[]):[];
   const activeStatus = activeAccount?statuses[activeAccount]:null;
   const showQRStatus = showQR?statuses[showQR]:null;
   const hasError     = showQRStatus?.status==='error'||qrTimeout;
 
- const filteredChats = (
-  chatSearch.trim()
-    ? currentChats.filter(c =>
-        ((c.name||'')+' '+(c.id||''))
-          .toLowerCase()
-          .includes(chatSearch.toLowerCase())
-      )
-    : currentChats
-).sort((a,b)=>
-  (b.lastMessageTime||0) -
-  (a.lastMessageTime||0)
-);
+  const filteredChats = chatSearch.trim()
+    ? currentChats.filter(c=>(c.name||'').toLowerCase().includes(chatSearch.toLowerCase()))
+    : currentChats;
 
   // ── Load chats ─────────────────────────────────────
   const loadChats = useCallback(async (accountId) => {
     if(!accountId) return;
     const attempt = async () => {
       try {
-        const c=await waAPI.getChats(accountId,5000);
+        const c=await waAPI.getChats(accountId,500);
         if(Array.isArray(c)&&c.length>0){ setChats(prev=>({...prev,[accountId]:c})); return true; }
         return false;
       } catch(e){ return false; }
@@ -110,23 +100,7 @@ const allAccounts = Object.entries(statuses || {})
       setMessages(prev=>[...prev,{id:msg.id,body:msg.body,fromMe:false,timestamp:msg.timestamp,type:'chat'}]);
     }
     if(msg.accountId===activeAccount) {
-      waAPI
-  .getChats(msg.accountId,5000)
-  .then(c=>{
-    if(Array.isArray(c)){
-
-      c.sort((a,b)=>
-        (b.lastMessageTime||0) -
-        (a.lastMessageTime||0)
-      );
-
-      setChats(prev=>({
-        ...prev,
-        [msg.accountId]:c
-      }));
-    }
-  })
-  .catch(()=>{});
+      waAPI.getChats(msg.accountId).then(c=>setChats(prev=>({...prev,[msg.accountId]:c}))).catch(()=>{});
     }
   },[realtimeMessages]);
 
@@ -263,11 +237,7 @@ const allAccounts = Object.entries(statuses || {})
                   <div style={{position:'absolute',bottom:0,right:0,width:10,height:10,borderRadius:'50%',background:STATUS_COLOR[st.status]||'#9ca3af',border:'2px solid var(--bg2)'}}/>
                 </div>
                 <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:13,fontWeight:activeAccount===id?700:500,color:activeAccount===id?'var(--accent)':'var(--text)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{
-  st.name ||
-  st.phone ||
-  `Account ${id}`
-}</div>
+                  <div style={{fontSize:13,fontWeight:activeAccount===id?700:500,color:activeAccount===id?'var(--accent)':'var(--text)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{st.name||id}</div>
                   <div style={{fontSize:11,color:'var(--text3)'}}>{st.phone?'+'+st.phone:st.status}</div>
                 </div>
                 <div style={{display:'flex',gap:4,flexShrink:0}}>
@@ -318,13 +288,7 @@ const allAccounts = Object.entries(statuses || {})
                     </div>
                     <div style={{flex:1,minWidth:0}}>
                       <div style={{display:'flex',justifyContent:'space-between',marginBottom:2}}>
-                        <span style={{fontSize:13.5,color:'var(--text)',fontWeight:chat.unreadCount?600:400,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:160}}>{
-  chat.name &&
-  !chat.name.includes('@')
-    ? chat.name
-    : cleanName(chat.name) ||
-      cleanName(chat.id)
-}</span>
+                        <span style={{fontSize:13.5,color:'var(--text)',fontWeight:chat.unreadCount?600:400,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:160}}>{cleanName(chat.name)||chat.id}</span>
                         <span style={{fontSize:11,color:'var(--text3)',flexShrink:0}}>{fmtTime(chat.lastMessageTime)}</span>
                       </div>
                       <div className="email-preview">{chat.lastMessage||'…'}</div>
