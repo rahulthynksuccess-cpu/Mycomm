@@ -140,20 +140,10 @@ export default function WhatsAppTab({
       st.status
     );
   });
-    .filter(([id, st]) => {
-      return (
-        id &&
-        id !== 'undefined' &&
-        id !== 'null' &&
-        st &&
-        typeof st === 'object' &&
-        st.status
-      );
-    });
 
-  const currentChats = activeAccount
-    ? (chats[activeAccount] || [])
-    : [];
+const currentChats = activeAccount
+  ? (chats[activeAccount] || [])
+  : [];
 
   const activeStatus = activeAccount
     ? statuses[activeAccount]
