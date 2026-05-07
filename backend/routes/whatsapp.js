@@ -33,7 +33,7 @@ router.delete('/sessions/:accountId', async (req, res) => {
 
 router.get('/:accountId/chats', async (req, res) => {
   try {
-    const chats = await getRecentChats(req.params.accountId, parseInt(req.query.limit) || 200);
+    const chats = await getRecentChats(req.params.accountId, parseInt(req.query.limit) || 1000);
     res.json(chats);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -45,7 +45,7 @@ router.get('/:accountId/chats/:chatId/messages', async (req, res) => {
     const msgs = await getChatMessages(
       req.params.accountId,
       decodeURIComponent(req.params.chatId),
-      parseInt(req.query.limit) || 200
+      parseInt(req.query.limit) || 500
     );
     res.json(msgs);
   } catch (err) {

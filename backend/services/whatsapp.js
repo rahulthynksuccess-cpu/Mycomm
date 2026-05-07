@@ -510,38 +510,33 @@ async function getChatMessages(accountId, chatId, limit = 500) {
   // Load from DB if not in memory
   if (msgs.length === 0 && pool) {
     try {
-      let res = await pool.query(
-        "SELECT value FROM wa_sessions WHERE account_id = $1 AND key = $2",
+      // FIX: Always prefer per-chat key (most up-to-date) over bulk cache
+      const res = await pool.query(
+        `SELECT key, value FROM wa_sessions
+         WHERE account_id = $1 AND key IN ($2, 'msgs_cache')
+         ORDER BY CASE key WHEN $2 THEN 0 ELSE 1 END`,
         [accountId, `msgs_${chatId}`]
       );
-      if (res.rows.length) {
-        msgs = JSON.parse(res.rows[0].value) || [];
-        if (msgs.length && msgMap[accountId]) {
-          msgs.sort((a, b) => Number(a.messageTimestamp) - Number(b.messageTimestamp));
-          msgMap[accountId].set(chatId, msgs);
-        }
-      }
-      if (!msgs.length) {
-        res = await pool.query(
-          "SELECT value FROM wa_sessions WHERE account_id = $1 AND key = 'msgs_cache'",
-          [accountId]
-        );
-        if (res.rows.length) {
-          const allMsgs = JSON.parse(res.rows[0].value);
+      for (const row of res.rows) {
+        if (row.key === `msgs_${chatId}`) {
+          msgs = JSON.parse(row.value) || [];
+          break; // per-chat key wins — stop looking
+        } else if (row.key === 'msgs_cache' && msgs.length === 0) {
+          const allMsgs = JSON.parse(row.value);
           msgs = (allMsgs && allMsgs[chatId]) || [];
-          if (msgs.length && msgMap[accountId]) {
-            msgs.sort((a, b) => Number(a.messageTimestamp) - Number(b.messageTimestamp));
-            msgMap[accountId].set(chatId, msgs);
-          }
         }
       }
-    } catch (e) {}
+      if (msgs.length && msgMap[accountId]) {
+        msgs.sort((a, b) => Number(a.messageTimestamp) - Number(b.messageTimestamp));
+        msgMap[accountId].set(chatId, msgs);
+      }
+    } catch (e) { console.error('[WA] getChatMessages DB error:', e.message); }
   }
 
-  // Ensure sorted oldest→newest
+  // FIX: Ensure sorted oldest→newest before slicing
   msgs.sort((a, b) => Number(a.messageTimestamp) - Number(b.messageTimestamp));
 
-  // Return the LATEST `limit` messages (tail of sorted array)
+  // Return the LATEST `limit` messages (tail of sorted array = most recent)
   return msgs.slice(-limit).map(m => ({
     id:        m.key.id,
     body:      extractBody(m),

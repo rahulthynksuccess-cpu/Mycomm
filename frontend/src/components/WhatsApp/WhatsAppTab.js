@@ -17,7 +17,12 @@ const fmtTime = (ts, full=false) => {
   if(full) return todayIST===dateIST ? timeStr : d.toLocaleDateString('en-IN',{timeZone:IST,day:'numeric',month:'short',year:'2-digit'})+', '+timeStr;
   return todayIST===dateIST ? timeStr : d.toLocaleDateString('en-IN',{timeZone:IST,day:'numeric',month:'short'});
 };
-const cleanName = n => n?.includes('@') ? n.split('@')[0].split(':')[0].replace(/\D/g,'') : (n||'');
+// FIX #1: Only strip raw JID strings, never strip saved contact names
+const cleanName = n => {
+  if (!n) return '';
+  if (n.includes('@')) return n.split('@')[0].split(':')[0].replace(/\D/g, '');
+  return n;
+};
 
 const STATUS_COLOR = { ready:'#25d366', qr:'#f59e0b', initializing:'#3b82f6', authenticated:'#3b82f6', disconnected:'#ef4444', error:'#ef4444', auth_failure:'#ef4444' };
 
@@ -45,13 +50,16 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
   const prevChatId         = useRef(null);
   const qrTimerRef         = useRef(null);
 
-  // ── Merge pushed chats ─────────────────────────────
+  // ── Merge pushed chats — FIX #2: only replace if new list is non-empty and larger/newer ─────
   useEffect(() => {
     if(!pushedChats||!Object.keys(pushedChats).length) return;
     setChats(prev => {
       const next={...prev};
       for(const [id,list] of Object.entries(pushedChats)) {
-        if(Array.isArray(list)&&list.length>0) next[id]=list;
+        if(Array.isArray(list)&&list.length>0) {
+          // Keep the larger list — pushed updates can be partial
+          if(!next[id]||list.length>=next[id].length) next[id]=list;
+        }
       }
       return next;
     });
@@ -73,7 +81,8 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
     if(!accountId) return;
     const attempt = async () => {
       try {
-        const c=await waAPI.getChats(accountId,500);
+        // FIX #2: Use limit 1000 to match backend; show all chats like WhatsApp Web
+        const c=await waAPI.getChats(accountId,1000);
         if(Array.isArray(c)&&c.length>0){ setChats(prev=>({...prev,[accountId]:c})); return true; }
         return false;
       } catch(e){ return false; }
@@ -104,25 +113,44 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
     }
   },[realtimeMessages]);
 
-  // ── Scroll handling ────────────────────────────────
-  const handleScroll = useCallback(() => {
+  // ── Scroll handling — FIX #3: preserve position when loading older msgs ──
+  const handleScroll = useCallback(async () => {
     const el=scrollContainerRef.current;
     if(!el||!activeChat||!activeAccount) return;
-    if(el.scrollTop<50) {
+    if(el.scrollTop<80) {
       const nl=msgLimit+100; setMsgLimit(nl);
-      waAPI.getMessages(activeAccount,activeChat.id,nl).then(m=>{if(m?.length)setMessages(m);}).catch(()=>{});
+      // Capture scroll height before loading so we can restore position
+      const prevScrollHeight=el.scrollHeight;
+      const prevScrollTop=el.scrollTop;
+      try {
+        const m=await waAPI.getMessages(activeAccount,activeChat.id,nl);
+        if(m?.length) {
+          setMessages(m);
+          // Restore scroll position after new messages prepended
+          requestAnimationFrame(()=>{
+            const newScrollHeight=el.scrollHeight;
+            el.scrollTop=prevScrollTop+(newScrollHeight-prevScrollHeight);
+          });
+        }
+      } catch(_) {}
     }
   },[activeChat,activeAccount,msgLimit]);
 
+  // Scroll to bottom only when near bottom (don't interrupt user scrolling up)
   useEffect(() => {
     const el=scrollContainerRef.current;
-    if(!el) return;
-    if(el.scrollHeight-el.scrollTop-el.clientHeight<150) messagesEndRef.current?.scrollIntoView({behavior:'smooth'});
+    if(!el||!messages.length) return;
+    const nearBottom=el.scrollHeight-el.scrollTop-el.clientHeight<200;
+    if(nearBottom) messagesEndRef.current?.scrollIntoView({behavior:'smooth'});
   },[messages]);
 
+  // On chat switch: always jump to bottom instantly
   useEffect(() => {
     if(!messages.length) return;
-    if(activeChat?.id!==prevChatId.current){ prevChatId.current=activeChat?.id; setTimeout(()=>messagesEndRef.current?.scrollIntoView({behavior:'instant'}),50); }
+    if(activeChat?.id!==prevChatId.current){
+      prevChatId.current=activeChat?.id;
+      setTimeout(()=>messagesEndRef.current?.scrollIntoView({behavior:'instant'}),60);
+    }
   },[messages,activeChat?.id]);
 
   // ── Session management ─────────────────────────────
@@ -171,11 +199,17 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
 
   // ── Chat & messaging ───────────────────────────────
   async function openChat(chat) {
-    setActiveChat(chat); setMessages([]); setMsgLimit(200); setLoading(true);
+    setActiveChat(chat); setMessages([]); setMsgLimit(500); setLoading(true);
     setChats(prev=>({...prev,[activeAccount]:(prev[activeAccount]||[]).map(c=>c.id===chat.id?{...c,unreadCount:0}:c)}));
-    try { const m=await waAPI.getMessages(activeAccount,chat.id); setMessages(m); }
+    try {
+      // FIX #3: load up to 500 msgs (backend returns LATEST 500 sorted oldest→newest)
+      const m=await waAPI.getMessages(activeAccount,chat.id,500);
+      setMessages(m);
+    }
     catch(e){ console.error(e); }
     setLoading(false);
+    // Always scroll to bottom after loading — show most recent messages first
+    setTimeout(()=>messagesEndRef.current?.scrollIntoView({behavior:'instant'}),80);
   }
 
   async function sendNewChat() {
