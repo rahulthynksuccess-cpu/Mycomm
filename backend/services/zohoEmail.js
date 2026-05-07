@@ -204,7 +204,9 @@ if (!folderId) {
   );
 }
 
-const listUrl = `${ZOHO_API_BASE}/${zohoAccId}/folders/${folderId}/messages/view`;
+const listUrl =
+  `${ZOHO_API_BASE}/${zohoAccId}/messages/view` +
+  `?folderId=${folderId}`;
 
   const data = await zohoGet(listUrl, token.access_token, params);
 
