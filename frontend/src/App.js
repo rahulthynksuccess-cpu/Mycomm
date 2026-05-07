@@ -74,10 +74,12 @@ export default function App() {
     socket.on('wa:chats', ({ accountId, chats }) => {
       if (Array.isArray(chats) && chats.length > 0) {
         setWaChats(prev => {
-          // Only update if count changed or different chats — prevents pointless re-renders
           const existing = prev[accountId];
+          // FIX: Only skip if count AND first+last IDs all match (true no-op)
+          // Previous check was too strict — blocked updates with resolved names
           if (existing && existing.length === chats.length &&
-              existing[0]?.id === chats[0]?.id) return prev;
+              existing[0]?.id === chats[0]?.id &&
+              existing[existing.length-1]?.id === chats[chats.length-1]?.id) return prev;
           return { ...prev, [accountId]: chats };
         });
       }

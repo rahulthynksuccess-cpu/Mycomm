@@ -81,18 +81,36 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
     if(!accountId) return;
     const attempt = async () => {
       try {
-        // FIX #2: Use limit 1000 to match backend; show all chats like WhatsApp Web
         const c=await waAPI.getChats(accountId,1000);
         if(Array.isArray(c)&&c.length>0){ setChats(prev=>({...prev,[accountId]:c})); return true; }
         return false;
       } catch(e){ return false; }
     };
     const got=await attempt();
-    if(!got) setTimeout(()=>attempt(),4000);
+    // FIX: Retry several times — server may still be loading cache from DB
+    if(!got) {
+      for(const delay of [3000,6000,12000,25000]) {
+        await new Promise(r=>setTimeout(r,delay));
+        const ok=await attempt();
+        if(ok) break;
+      }
+    }
   },[]);
 
   const activeStatus2 = statuses[activeAccount]?.status;
-  useEffect(()=>{ if(activeAccount&&activeStatus2==='ready') loadChats(activeAccount); },[activeStatus2,activeAccount]);
+  useEffect(()=>{ 
+    if(activeAccount&&activeStatus2==='ready') loadChats(activeAccount); 
+  },[activeStatus2,activeAccount]);
+
+  // FIX: Also load via HTTP if pushed chats are empty for the active account
+  useEffect(()=>{
+    if(!activeAccount) return;
+    const accountChats=chats[activeAccount];
+    const isReady=statuses[activeAccount]?.status==='ready';
+    if(isReady&&(!accountChats||accountChats.length===0)) {
+      loadChats(activeAccount);
+    }
+  },[chats,activeAccount,statuses]);
 
   // ── Close QR when ready ────────────────────────────
   useEffect(() => {
