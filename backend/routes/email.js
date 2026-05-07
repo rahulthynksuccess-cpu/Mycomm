@@ -12,6 +12,7 @@ const {
   searchEmails,
   getFolders,
 } = require('../services/email');
+const { getAuthUrl, loadToken } = require('../services/zohoEmail');
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -46,12 +47,46 @@ async function saveAccountsToDb(accounts) {
 
 // ─── Account management ─────────────────────────────────────────────────────
 
+// GET /api/email/zoho-auth
+// Returns the Zoho OAuth URL so the frontend can open the popup
+router.get('/zoho-auth', async (req, res) => {
+  try {
+    const { accountId } = req.query;
+    if (!accountId) return res.status(400).json({ error: 'accountId required' });
+
+    // Find the account to get the email hint (so Zoho pre-fills the login email)
+    const accounts = await getAccountsAsync();
+    const acc = accounts.find(a => a.id === accountId);
+    const emailHint = acc?.user || null;
+
+    const url = getAuthUrl(accountId, emailHint);
+    res.json({ url });
+  } catch (e) {
+    console.error('[Email] getZohoAuthUrl error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /api/email/accounts
 router.get('/accounts', async (req, res) => {
   try {
     const accounts = await getAccountsAsync();
-    const safe = accounts.map(({ password, ...rest }) => rest);
-    res.json(safe);
+
+    // For Zoho accounts, check if a valid token exists in DB
+    const enriched = await Promise.all(accounts.map(async (acc) => {
+      const { password, ...safe } = acc;
+      if (safe.type === 'zoho') {
+        try {
+          const token = await loadToken(safe.id);
+          safe.zohoConnected = !!(token && token.access_token && token.refresh_token);
+        } catch (e) {
+          safe.zohoConnected = false;
+        }
+      }
+      return safe;
+    }));
+
+    res.json(enriched);
   } catch (e) {
     console.error('[Email] getAccounts error:', e.message);
     res.status(500).json({ error: e.message });
