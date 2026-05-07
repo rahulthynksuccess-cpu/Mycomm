@@ -66,11 +66,12 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
   }, []);
 
   // ── Auto-select first ready account (only when none selected) ──
+  const readyAccountIds = readyAccounts.map(([id]) => id).join(',');
   useEffect(() => {
-    if (activeAccount) return;  // already have one, don't interfere
+    if (activeAccount) return;
     if (readyAccounts.length === 0) return;
     setActiveAccount(readyAccounts[0][0]);
-  }, [readyAccounts.length]);
+  }, [readyAccountIds]); // stable string dep — only fires when account list actually changes
 
   // ── Load chats whenever active account changes ───────
   // Depends only on activeAccount so switching always triggers a fresh load.
@@ -84,12 +85,13 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
   }, [activeAccount]); // intentionally only activeAccount — avoids stale-value trap
 
   // Separate effect: fires when an account first becomes ready (e.g. after QR scan)
+  const activeStatus2 = statuses[activeAccount]?.status;
   useEffect(() => {
     if (!activeAccount) return;
-    if (statuses[activeAccount]?.status === 'ready') {
+    if (activeStatus2 === 'ready') {
       loadChats(activeAccount);
     }
-  }, [statuses[activeAccount]?.status]);
+  }, [activeStatus2, activeAccount]); // only re-fires when status string changes
 
   // ── Close QR modal only when account is actually ready ──
   useEffect(() => {

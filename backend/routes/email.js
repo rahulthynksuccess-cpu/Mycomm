@@ -48,6 +48,23 @@ router.get('/accounts', async (req, res) => {
   res.json(getAccounts().map(({ id, label, user, type, color }) => ({ id, label, user, type, color })));
 });
 
+// ── GET /api/email/zoho-debug?accountId= — returns raw Zoho API response ────
+router.get('/zoho-debug', async (req, res) => {
+  const { accountId } = req.query;
+  if (!accountId) return res.status(400).json({ error: 'accountId required' });
+  try {
+    const token = await zoho.loadToken(accountId);
+    if (!token) return res.json({ error: 'No token saved for this account' });
+    const axios = require('axios');
+    const r = await axios.get('https://mail.zoho.in/api/accounts', {
+      headers: { Authorization: `Zoho-oauthtoken ${token.access_token}` },
+    });
+    res.json({ raw: r.data, accountId });
+  } catch (e) {
+    res.status(500).json({ error: e.message, response: e.response?.data });
+  }
+});
+
 // ── GET /api/email/zoho-auth?accountId= ──────────────────
 router.get('/zoho-auth', (req, res) => {
   const { accountId } = req.query;

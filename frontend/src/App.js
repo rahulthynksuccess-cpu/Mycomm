@@ -51,11 +51,12 @@ export default function App() {
     });
 
     socket.on('wa:status', ({ accountId, status, phone, name, error, reason }) => {
-      // Always merge, never replace the whole map
-      setWaStatuses(prev => ({
-        ...prev,
-        [accountId]: { ...(prev[accountId] || {}), status, phone, name, error, reason },
-      }));
+      setWaStatuses(prev => {
+        const cur = prev[accountId] || {};
+        // Skip update if nothing changed — prevents cascade re-renders
+        if (cur.status === status && cur.phone === phone && cur.name === name) return prev;
+        return { ...prev, [accountId]: { ...cur, status, phone, name, error, reason } };
+      });
       if (status === 'ready') {
         setWaQRs(prev => { const n = { ...prev }; delete n[accountId]; return n; });
         addNotification('success', `WhatsApp ${name || accountId} connected ✓`);
@@ -72,7 +73,13 @@ export default function App() {
 
     socket.on('wa:chats', ({ accountId, chats }) => {
       if (Array.isArray(chats) && chats.length > 0) {
-        setWaChats(prev => ({ ...prev, [accountId]: chats }));
+        setWaChats(prev => {
+          // Only update if count changed or different chats — prevents pointless re-renders
+          const existing = prev[accountId];
+          if (existing && existing.length === chats.length &&
+              existing[0]?.id === chats[0]?.id) return prev;
+          return { ...prev, [accountId]: chats };
+        });
       }
     });
 

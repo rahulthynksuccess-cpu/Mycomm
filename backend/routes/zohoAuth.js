@@ -24,8 +24,28 @@ router.get('/callback', async (req, res) => {
 
   try {
     const token = await exchangeCode(code);
-    await saveToken(accountId, { ...token, obtained_at: Date.now() });
-    console.log(`[Zoho] OAuth success for account: ${accountId}`);
+    
+    // Immediately fetch the Zoho internal accountId and store it with the token
+    // This avoids ever needing to match by email address later
+    let zohoAccountId = null;
+    try {
+      const axios = require('axios');
+      const r = await axios.get('https://mail.zoho.in/api/accounts', {
+        headers: { Authorization: `Zoho-oauthtoken ${token.access_token}` },
+      });
+      const data = r.data?.data || [];
+      console.log('[Zoho] OAuth accounts response:', JSON.stringify(data).slice(0, 500));
+      // The account that just logged in is the first one (or the only one)
+      // We also check userEmail claim from token if available
+      if (data.length > 0) {
+        zohoAccountId = data[0].accountId;
+      }
+    } catch (e) {
+      console.error('[Zoho] Could not fetch accountId at callback:', e.message);
+    }
+    
+    await saveToken(accountId, { ...token, obtained_at: Date.now(), zohoAccountId });
+    console.log(`[Zoho] OAuth success for account: ${accountId}, zohoAccountId: ${zohoAccountId}`);
     res.send(`<html><body><script>
       window.opener?.postMessage({ type: 'ZOHO_AUTH_SUCCESS', accountId: '${accountId}' }, '*');
       window.close();

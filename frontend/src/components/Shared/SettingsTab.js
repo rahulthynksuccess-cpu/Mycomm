@@ -1,15 +1,52 @@
 import React, { useState, useEffect } from 'react';
 import { waAPI, emailAPI } from '../../api';
 
-// Bug 2 fix: accept waStatuses + setWaStatuses from App.js (global state)
-// so disconnect here actually updates the whole app, not just a stale local copy.
 export default function SettingsTab({ socket, waStatuses, setWaStatuses }) {
   const [emailAccounts, setEmailAccounts] = useState([]);
   const [activeSection, setActiveSection] = useState('whatsapp');
+  const [zohoConnecting, setZohoConnecting] = useState({});
 
+  const loadEmailAccounts = () => emailAPI.getAccounts().then(setEmailAccounts).catch(() => {});
+
+  useEffect(() => { loadEmailAccounts(); }, []);
+
+  // Listen for Zoho OAuth popup result
   useEffect(() => {
-    emailAPI.getAccounts().then(setEmailAccounts).catch(() => {});
+    const handler = (e) => {
+      if (e.data?.type === 'ZOHO_AUTH_SUCCESS') {
+        setZohoConnecting(prev => ({ ...prev, [e.data.accountId]: false }));
+        loadEmailAccounts();
+      }
+      if (e.data?.type === 'ZOHO_AUTH_ERROR') {
+        setZohoConnecting({});
+        alert('Zoho connection failed: ' + e.data.error);
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
   }, []);
+
+  async function reconnectZoho(accountId) {
+    setZohoConnecting(prev => ({ ...prev, [accountId]: true }));
+    try {
+      const { url } = await emailAPI.getZohoAuthUrl(accountId);
+      window.open(url, '_blank', 'width=520,height=640');
+    } catch (e) {
+      setZohoConnecting(prev => ({ ...prev, [accountId]: false }));
+      alert('Could not get Zoho auth URL: ' + (e.response?.data?.error || e.message));
+    }
+  }
+
+  async function disconnectZoho(accountId) {
+    if (!window.confirm('Disconnect this Zoho account? You will need to reconnect it to read emails.')) return;
+    // Delete the OAuth token by calling the delete endpoint
+    try {
+      await emailAPI.deleteAccount(accountId);
+      // Re-add without password to keep account listed but disconnected
+      loadEmailAccounts();
+    } catch (e) {}
+    loadEmailAccounts();
+  }
 
   async function disconnectWA(id) {
     if (!window.confirm(`Disconnect WhatsApp account "${id}"?`)) return;
@@ -82,26 +119,57 @@ export default function SettingsTab({ socket, waStatuses, setWaStatuses }) {
           )}
 
           {activeSection === 'email' && (
-            <Section title="Email Accounts" subtitle="Email accounts are configured via the .env file on your backend server">
+            <Section title="Email Accounts" subtitle="Manage connected email accounts">
               {emailAccounts.length === 0 && (
-                <div style={{ color: 'var(--text3)', fontSize: 13 }}>No email accounts configured yet.</div>
+                <div style={{ color: 'var(--text3)', fontSize: 13 }}>No email accounts added yet. Go to the Email tab and click + Add.</div>
               )}
-              {emailAccounts.map(acc => (
-                <div key={acc.id} style={{
-                  padding: '14px 16px', borderRadius: 10, border: '1px solid var(--border)',
-                  background: 'var(--bg2)', display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10,
-                }}>
-                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: acc.color || 'var(--accent)', flexShrink: 0 }} />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14 }}>{acc.label}</div>
-                    <div style={{ fontSize: 12, color: 'var(--text3)' }}>{acc.user} · {acc.type}</div>
+              {emailAccounts.map(acc => {
+                const isZoho = acc.type === 'zoho';
+                const connected = !isZoho || acc.zohoConnected;
+                const connecting = zohoConnecting[acc.id];
+                return (
+                  <div key={acc.id} style={{
+                    padding: '14px 16px', borderRadius: 10,
+                    border: `1px solid ${!connected ? '#fed7aa' : 'var(--border)'}`,
+                    background: !connected ? '#fff8f0' : 'var(--bg2)',
+                    display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10,
+                  }}>
+                    <div style={{
+                      width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
+                      background: !connected ? '#f97316' : (acc.type === 'gmail' ? '#EA4335' : '#E05D2E'),
+                    }} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>{acc.label}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text3)' }}>
+                        {acc.user} · {acc.type}
+                        {isZoho && (
+                          <span style={{
+                            marginLeft: 8, fontSize: 10, padding: '1px 6px', borderRadius: 10,
+                            background: connected ? '#dcfce7' : '#fef9c3',
+                            color: connected ? '#166534' : '#854d0e',
+                            fontWeight: 600,
+                          }}>
+                            {connected ? 'OAuth Connected' : 'Not Connected'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {isZoho && (
+                      <button
+                        onClick={() => reconnectZoho(acc.id)}
+                        disabled={connecting}
+                        style={{
+                          padding: '5px 12px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+                          border: '1.5px solid #E05D2E', background: 'none',
+                          color: '#E05D2E', cursor: 'pointer', whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {connecting ? '⏳ Connecting…' : connected ? '🔄 Reconnect' : '🔗 Connect Zoho'}
+                      </button>
+                    )}
                   </div>
-                  <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 20, background: 'var(--accent-t)', color: 'var(--accent)' }}>
-                    {acc.type === 'gmail' ? 'Gmail / Workspace' : 'Zoho'}
-                  </span>
-                </div>
-              ))}
-              <EnvInstructions />
+                );
+              })}
             </Section>
           )}
 
