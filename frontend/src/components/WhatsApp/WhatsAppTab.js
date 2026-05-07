@@ -58,7 +58,19 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
   },[pushedChats]);
 
   // ── Derived ────────────────────────────────────────
-  const allAccounts  = Object.entries(statuses);
+  const allAccounts = Object.entries(statuses || {})
+  .filter(([id, st]) => {
+    return (
+      st &&
+      typeof st === 'object' &&
+      !Array.isArray(st) &&
+      (
+        st.name ||
+        st.phone ||
+        st.status
+      )
+    );
+  });
   const currentChats = activeAccount?(chats[activeAccount]||[]):[];
   const activeStatus = activeAccount?statuses[activeAccount]:null;
   const showQRStatus = showQR?statuses[showQR]:null;
