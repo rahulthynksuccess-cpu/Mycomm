@@ -1,8 +1,6 @@
-// File: backend/services/whatsapp.js
-
 /**
- * FINAL STABLE WhatsApp Service
- * Compatible with Railway + Baileys + Multi Account
+ * WhatsApp service — @whiskeysockets/baileys v6.7.x
+ * FINAL FIXED VERSION
  */
 
 const {
@@ -15,17 +13,14 @@ const {
 } = require('@whiskeysockets/baileys');
 
 const { usePostgresAuthState } = require('./pgAuthState');
-const { pool } = require('./db');
-
+const { pool, dbAvailable } = require('./db');
 const { Boom } = require('@hapi/boom');
 
 const pino = require('pino');
 const qrcode = require('qrcode');
 
-const fs = require('fs');
 const path = require('path');
-
-const logger = pino({ level: 'silent' });
+const fs = require('fs');
 
 const SESSIONS_DIR = path.join(__dirname, '..', 'sessions');
 
@@ -39,11 +34,19 @@ const chatMap = {};
 const msgMap = {};
 const contactMap = {};
 
+const MAX_ACCOUNTS = parseInt(
+  process.env.WA_MAX_ACCOUNTS || '5'
+);
+
+const logger = pino({ level: 'silent' });
+
 let _waVersion = null;
 
 async function getWAVersion() {
   if (!_waVersion) {
-    const { version } = await fetchLatestBaileysVersion();
+    const { version } =
+      await fetchLatestBaileysVersion();
+
     _waVersion = version;
   }
 
@@ -85,16 +88,39 @@ function extractBody(msg) {
     (m.locationMessage && '📍 Location') ||
     (m.contactMessage?.displayName &&
       `👤 ${m.contactMessage.displayName}`) ||
-    m.templateMessage?.hydratedTemplate?.hydratedContentText ||
+    m.templateMessage?.hydratedTemplate
+      ?.hydratedContentText ||
+    m.templateMessage?.hydratedTemplate
+      ?.hydratedTitleText ||
+    (m.templateMessage &&
+      '📋 Template message') ||
+    m.interactiveMessage?.body?.text ||
+    m.interactiveMessage?.header?.text ||
+    (m.interactiveMessage &&
+      '📋 Interactive message') ||
     m.buttonsMessage?.contentText ||
     m.listMessage?.description ||
     (m.reactionMessage &&
       `${m.reactionMessage.text || '👍'} Reaction`) ||
+    (m.pollCreationMessage?.name &&
+      `📊 Poll: ${m.pollCreationMessage.name}`) ||
+    (m.ephemeralMessage &&
+      extractBody({
+        message: m.ephemeralMessage.message,
+      })) ||
+    (m.viewOnceMessage &&
+      extractBody({
+        message: m.viewOnceMessage.message,
+      })) ||
     ''
   );
 }
 
-function resolveName(accountId, jid, fallback) {
+function resolveName(
+  accountId,
+  jid,
+  fallback
+) {
   const c = contactMap[accountId]?.get(jid);
 
   const phone = phoneFromJid(jid);
@@ -118,7 +144,10 @@ function resolveName(accountId, jid, fallback) {
   return phone || jid;
 }
 
-function buildChatList(accountId, limit = 5000) {
+function buildChatList(
+  accountId,
+  limit = 5000
+) {
   const map = chatMap[accountId];
 
   if (!map || map.size === 0) {
@@ -128,26 +157,38 @@ function buildChatList(accountId, limit = 5000) {
   return [...map.values()]
     .sort(
       (a, b) =>
-        (Number(b.conversationTimestamp) || 0) -
-        (Number(a.conversationTimestamp) || 0)
+        (Number(b.conversationTimestamp) ||
+          0) -
+        (Number(a.conversationTimestamp) ||
+          0)
     )
     .slice(0, limit)
     .map(chat => ({
       id: chat.id,
-      name: resolveName(accountId, chat.id, chat.name),
-      lastMessage: chat.lastMessage || '',
+      name: resolveName(
+        accountId,
+        chat.id,
+        chat.name
+      ),
+      lastMessage:
+        chat.lastMessage || '',
       lastMessageTime:
-        Number(chat.conversationTimestamp) || 0,
-      unreadCount: chat.unreadCount || 0,
+        Number(chat.conversationTimestamp) ||
+        0,
+      unreadCount:
+        chat.unreadCount || 0,
       isGroup: isJidGroup(chat.id),
     }));
 }
 
-async function createClient(accountId, io) {
-  // Prevent duplicate clients
+async function createClient(
+  accountId,
+  io
+) {
+  // FIXED: Prevent reconnect loop
   if (clients[accountId]) {
     console.log(
-      `[WA] Client already exists for ${accountId}`
+      `[WA] Client already active for ${accountId}`
     );
 
     return clients[accountId];
@@ -170,13 +211,19 @@ async function createClient(accountId, io) {
   let removeAll;
 
   try {
+    if (!pool) {
+      throw new Error('No pool');
+    }
+
     await pool.query('SELECT 1');
 
     ({
       state,
       saveCreds,
       removeAll,
-    } = await usePostgresAuthState(accountId));
+    } = await usePostgresAuthState(
+      accountId
+    ));
 
     console.log(
       `[WA] Using Postgres auth for ${accountId}`
@@ -225,15 +272,20 @@ async function createClient(accountId, io) {
       ),
     },
 
-    browser: ['MyComms', 'Chrome', '10.0'],
-
     printQRInTerminal: false,
+
+    browser: [
+      'MyComms',
+      'Chrome',
+      '10.0',
+    ],
 
     syncFullHistory: true,
 
     fireInitQueries: true,
 
-    shouldSyncHistoryMessage: () => true,
+    shouldSyncHistoryMessage:
+      () => true,
 
     markOnlineOnConnect: true,
 
@@ -247,26 +299,11 @@ async function createClient(accountId, io) {
   function pushChats() {
     const list = buildChatList(accountId);
 
-    io.emit('wa:chats', {
-      accountId,
-      chats: list,
-    });
-
-    if (pool && list.length > 0) {
-      pool
-        .query(
-          `
-          INSERT INTO wa_sessions
-          (account_id, key, value)
-
-          VALUES ($1, 'chats_cache', $2)
-
-          ON CONFLICT (account_id, key)
-          DO UPDATE SET value = EXCLUDED.value
-          `,
-          [accountId, JSON.stringify(list)]
-        )
-        .catch(() => {});
+    if (list.length > 0) {
+      io.emit('wa:chats', {
+        accountId,
+        chats: list,
+      });
     }
   }
 
@@ -298,12 +335,14 @@ async function createClient(accountId, io) {
       }
 
       if (connection === 'open') {
-        const phone = phoneFromJid(
-          sock.user?.id || ''
-        );
+        const phone =
+          phoneFromJid(
+            sock.user?.id || ''
+          );
 
         const name =
-          sock.user?.name || accountId;
+          sock.user?.name ||
+          accountId;
 
         console.log(
           `[WA] ${accountId} ready — ${phone}`
@@ -320,34 +359,18 @@ async function createClient(accountId, io) {
           name,
         });
 
-        [2000, 5000, 10000, 20000, 30000]
+        [2000, 5000, 10000, 20000]
           .forEach(delay => {
             setTimeout(() => {
               pushChats();
             }, delay);
           });
-
-        setTimeout(async () => {
-          try {
-            await sock.fetchAllParticipating();
-
-            console.log(
-              `[WA] Full sync complete for ${accountId}`
-            );
-
-            pushChats();
-          } catch (e) {
-            console.log(
-              '[WA] Full sync failed:',
-              e.message
-            );
-          }
-        }, 7000);
       }
 
       if (connection === 'close') {
         const statusCode =
-          lastDisconnect?.error instanceof Boom
+          lastDisconnect?.error instanceof
+          Boom
             ? lastDisconnect.error.output
                 ?.statusCode
             : null;
@@ -362,8 +385,13 @@ async function createClient(accountId, io) {
 
         delete clients[accountId];
 
-        if (loggedOut || badSession) {
-          await removeAll().catch(() => {});
+        if (
+          loggedOut ||
+          badSession
+        ) {
+          await removeAll().catch(
+            () => {}
+          );
 
           delete chatMap[accountId];
           delete msgMap[accountId];
@@ -371,7 +399,6 @@ async function createClient(accountId, io) {
 
           emitStatus(io, accountId, {
             status: 'auth_failure',
-
             error: loggedOut
               ? 'Logged out from phone'
               : 'Bad session — re-scan QR',
@@ -382,14 +409,22 @@ async function createClient(accountId, io) {
             reason: String(statusCode),
           });
 
+          const delay =
+            statusCode ===
+            DisconnectReason.restartRequired
+              ? 2000
+              : 8000;
+
           setTimeout(() => {
-            if (!clients[accountId]) {
+            if (
+              !clients[accountId]
+            ) {
               createClient(
                 accountId,
                 io
               ).catch(console.error);
             }
-          }, 8000);
+          }, delay);
         }
       }
     }
@@ -400,20 +435,205 @@ async function createClient(accountId, io) {
     saveCreds
   );
 
+  function storeContacts(
+    list = []
+  ) {
+    for (const c of list) {
+      if (!c.id) continue;
+
+      const existing =
+        contactMap[accountId].get(
+          c.id
+        ) || {};
+
+      const name =
+        c.name ||
+        c.verifiedName ||
+        existing.name ||
+        '';
+
+      const notify =
+        c.notify ||
+        c.pushName ||
+        existing.notify ||
+        '';
+
+      if (name || notify) {
+        contactMap[accountId].set(
+          c.id,
+          {
+            name,
+            notify,
+          }
+        );
+      }
+    }
+  }
+
+  function storeChats(
+    list = []
+  ) {
+    for (const chat of list) {
+      chatMap[accountId].set(
+        chat.id,
+        {
+          ...chatMap[
+            accountId
+          ].get(chat.id),
+
+          ...chat,
+        }
+      );
+    }
+  }
+
+  function pushChatUpdates() {
+    pushChats();
+  }
+
+  sock.ev.on(
+    'contacts.upsert',
+    cs => {
+      storeContacts(cs);
+      pushChatUpdates();
+    }
+  );
+
+  sock.ev.on(
+    'contacts.update',
+    cs => {
+      storeContacts(cs);
+      pushChatUpdates();
+    }
+  );
+
+  sock.ev.on(
+    'chats.upsert',
+    cs => {
+      storeChats(cs);
+      pushChatUpdates();
+    }
+  );
+
+  sock.ev.on(
+    'chats.update',
+    cs => {
+      storeChats(cs);
+      pushChatUpdates();
+    }
+  );
+
+  sock.ev.on(
+    'chats.set',
+    cs => {
+      storeChats(
+        cs.chats || []
+      );
+
+      pushChatUpdates();
+    }
+  );
+
+  sock.ev.on(
+    'messaging-history.set',
+    ({
+      chats: hc,
+      contacts: hct,
+      messages: hm,
+    }) => {
+      if (hct?.length) {
+        storeContacts(hct);
+      }
+
+      if (hc?.length) {
+        storeChats(hc);
+      }
+
+      if (hm?.length) {
+        for (const msg of hm) {
+          const jid =
+            msg.key?.remoteJid;
+
+          if (
+            !jid ||
+            !msg.message
+          ) {
+            continue;
+          }
+
+          if (
+            !msgMap[
+              accountId
+            ].has(jid)
+          ) {
+            msgMap[
+              accountId
+            ].set(jid, []);
+          }
+
+          msgMap[
+            accountId
+          ]
+            .get(jid)
+            .push(msg);
+        }
+      }
+
+      setTimeout(() => {
+        pushChats();
+      }, 2000);
+    }
+  );
+
+  const SKIP_TYPES =
+    new Set([
+      'protocolMessage',
+      'senderKeyDistributionMessage',
+      'messageContextInfo',
+      'appStateSyncKeyShare',
+      'reaction',
+      'pollUpdateMessage',
+    ]);
+
   sock.ev.on(
     'messages.upsert',
-    async ({ messages }) => {
-      for (const msg of messages || []) {
-        const jid = msg.key.remoteJid;
+    ({ messages: msgs, type }) => {
+      for (const msg of msgs) {
+        const jid =
+          msg.key.remoteJid || '';
 
         if (!jid) continue;
 
+        const msgType =
+          Object.keys(
+            msg.message || {}
+          )[0];
+
+        if (
+          !msg.message ||
+          SKIP_TYPES.has(msgType)
+        ) {
+          continue;
+        }
+
+        if (
+          !msgMap[
+            accountId
+          ].has(jid)
+        ) {
+          msgMap[
+            accountId
+          ].set(jid, []);
+        }
+
         const arr =
-          msgMap[accountId].get(jid) || [];
+          msgMap[
+            accountId
+          ].get(jid);
 
         arr.push(msg);
 
-        // Prevent memory leak
+        // FIXED memory leak
         if (arr.length > 300) {
           arr.splice(
             0,
@@ -421,30 +641,317 @@ async function createClient(accountId, io) {
           );
         }
 
-        msgMap[accountId].set(jid, arr);
+        const existing =
+          chatMap[
+            accountId
+          ].get(jid) || {
+            id: jid,
+          };
 
-        chatMap[accountId].set(jid, {
-          ...(chatMap[accountId].get(jid) ||
-            {}),
-
-          id: jid,
+        chatMap[
+          accountId
+        ].set(jid, {
+          ...existing,
 
           conversationTimestamp:
-            msg.messageTimestamp ||
-            Math.floor(Date.now() / 1000),
+            msg.messageTimestamp,
 
-          lastMessage: extractBody(msg),
+          lastMessage:
+            extractBody(msg),
         });
-      }
 
-      pushChats();
+        if (
+          msg.pushName
+        ) {
+          const ec =
+            contactMap[
+              accountId
+            ].get(jid) || {};
+
+          if (
+            !ec.name &&
+            !ec.notify
+          ) {
+            contactMap[
+              accountId
+            ].set(jid, {
+              ...ec,
+              notify:
+                msg.pushName,
+            });
+          }
+        }
+
+        if (
+          type === 'notify' &&
+          !msg.key.fromMe
+        ) {
+          io.emit('wa:message', {
+            accountId,
+
+            id: msg.key.id,
+
+            chatId: jid,
+
+            from:
+              resolveName(
+                accountId,
+                jid,
+                msg.pushName
+              ),
+
+            fromNumber: jid,
+
+            body:
+              extractBody(msg),
+
+            type:
+              Object.keys(
+                msg.message || {}
+              )[0] ||
+              'unknown',
+
+            timestamp:
+              Number(
+                msg.messageTimestamp
+              ) ||
+              Math.floor(
+                Date.now() / 1000
+              ),
+
+            isGroup:
+              isJidGroup(jid),
+
+            chatName:
+              resolveName(
+                accountId,
+                jid,
+                msg.pushName
+              ),
+          });
+
+          pushChats();
+        }
+      }
     }
   );
 
   return sock;
 }
 
-function listStoredSessions() {
+async function initWhatsApp(
+  io
+) {
+  await getWAVersion().catch(
+    () => {}
+  );
+
+  const saved =
+    await getSavedSessionIds();
+
+  console.log(
+    '[WA] Restoring sessions:',
+    saved
+  );
+
+  for (
+    let i = 0;
+    i < saved.length;
+    i++
+  ) {
+    if (i > 0) {
+      await new Promise(r =>
+        setTimeout(r, 3000)
+      );
+    }
+
+    await createClient(
+      saved[i],
+      io
+    ).catch(e =>
+      console.error(
+        '[WA] Restore failed',
+        e.message
+      )
+    );
+  }
+}
+
+async function addNewSession(
+  accountId,
+  io
+) {
+  if (
+    Object.keys(clients)
+      .length >= MAX_ACCOUNTS
+  ) {
+    throw new Error(
+      `Max ${MAX_ACCOUNTS} accounts reached`
+    );
+  }
+
+  await createClient(
+    accountId,
+    io
+  );
+}
+
+async function disconnectSession(
+  accountId
+) {
+  if (clients[accountId]) {
+    try {
+      clients[accountId].end(
+        undefined
+      );
+    } catch (_) {}
+
+    delete clients[accountId];
+  }
+
+  if (dbAvailable && pool) {
+    await pool
+      .query(
+        'DELETE FROM wa_sessions WHERE account_id = $1',
+        [accountId]
+      )
+      .catch(() => {});
+  }
+
+  const dir = path.join(
+    SESSIONS_DIR,
+    `session-${accountId}`
+  );
+
+  if (fs.existsSync(dir)) {
+    fs.rmSync(dir, {
+      recursive: true,
+      force: true,
+    });
+  }
+
+  delete chatMap[accountId];
+  delete msgMap[accountId];
+  delete contactMap[accountId];
+  delete statuses[accountId];
+}
+
+async function sendWAMessage(
+  accountId,
+  to,
+  body
+) {
+  const sock =
+    clients[accountId];
+
+  if (
+    !sock ||
+    statuses[accountId]
+      ?.status !== 'ready'
+  ) {
+    throw new Error(
+      'Account not ready'
+    );
+  }
+
+  const jid =
+    to.includes('@')
+      ? to
+      : `${to.replace(
+          /\D/g,
+          ''
+        )}@s.whatsapp.net`;
+
+  await sock.sendMessage(jid, {
+    text: body,
+  });
+}
+
+async function getRecentChats(
+  accountId,
+  limit = 50
+) {
+  return buildChatList(
+    accountId,
+    limit
+  );
+}
+
+async function getChatMessages(
+  accountId,
+  chatId,
+  limit = 200
+) {
+  const msgs =
+    msgMap[accountId]?.get(
+      chatId
+    ) || [];
+
+  return msgs
+    .slice(-limit)
+    .map(m => ({
+      id: m.key.id,
+
+      body:
+        extractBody(m),
+
+      fromMe:
+        m.key.fromMe || false,
+
+      type:
+        Object.keys(
+          m.message || {}
+        )[0] || 'unknown',
+
+      timestamp:
+        Number(
+          m.messageTimestamp
+        ) || 0,
+
+      author:
+        m.key.participant ||
+        null,
+    }));
+}
+
+function getStatuses() {
+  return statuses;
+}
+
+async function getSavedSessionIds() {
+  if (pool) {
+    for (
+      let i = 0;
+      i < 10;
+      i++
+    ) {
+      try {
+        const res =
+          await pool.query(
+            `
+            SELECT DISTINCT account_id
+            FROM wa_sessions
+            WHERE key = 'creds'
+            `
+          );
+
+        return res.rows.map(
+          r => r.account_id
+        );
+      } catch (e) {
+        console.log(
+          `[WA] DB retry ${
+            i + 1
+          }/10`
+        );
+
+        await new Promise(r =>
+          setTimeout(r, 3000)
+        );
+      }
+    }
+  }
+
   if (!fs.existsSync(SESSIONS_DIR)) {
     return [];
   }
@@ -452,17 +959,24 @@ function listStoredSessions() {
   return fs
     .readdirSync(SESSIONS_DIR)
     .filter(d => {
-      if (!d.startsWith('session-')) {
+      if (
+        !d.startsWith(
+          'session-'
+        )
+      ) {
         return false;
       }
 
       const accountId =
-        d.replace('session-', '');
+        d.replace(
+          'session-',
+          ''
+        );
 
-      // Ignore invalid folders only
       if (
         !accountId ||
-        accountId === 'undefined' ||
+        accountId ===
+          'undefined' ||
         accountId === 'null'
       ) {
         return false;
@@ -477,14 +991,25 @@ function listStoredSessions() {
       );
     })
     .map(d =>
-      d.replace('session-', '')
+      d.replace(
+        'session-',
+        ''
+      )
     );
 }
 
 module.exports = {
-  createClient,
-  clients,
-  statuses,
-  buildChatList,
-  listStoredSessions,
+  initWhatsApp,
+
+  addNewSession,
+
+  sendWAMessage,
+
+  getRecentChats,
+
+  getChatMessages,
+
+  disconnectSession,
+
+  getStatuses,
 };
