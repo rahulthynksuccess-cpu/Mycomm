@@ -166,7 +166,8 @@ router.get('/:accountId/messages/:uid', async (req, res) => {
   try {
     const { folder = 'INBOX' } = req.query;
     const svc = await svcFor(req.params.accountId);
-    const body = await svc.fetchEmailBody(req.params.accountId, parseInt(req.params.uid, 10), folder);
+    // Pass uid as string — Zoho message IDs are large 64-bit integers that must not be parsed as JS numbers
+    const body = await svc.fetchEmailBody(req.params.accountId, req.params.uid, folder);
     res.json(body);
   } catch (e) {
     console.error('[Email] fetchEmailBody error:', e.message);
@@ -196,7 +197,7 @@ router.delete('/:accountId/messages/:uid', async (req, res) => {
   try {
     const { folder = 'INBOX' } = req.query;
     const svc = await svcFor(req.params.accountId);
-    const result = await svc.deleteEmail(req.params.accountId, parseInt(req.params.uid, 10), folder);
+    const result = await svc.deleteEmail(req.params.accountId, req.params.uid, folder);
     res.json(result);
   } catch (e) {
     console.error('[Email] deleteEmail error:', e.message);
@@ -209,7 +210,7 @@ router.post('/:accountId/messages/:uid/move', async (req, res) => {
   try {
     const { fromFolder, toFolder } = req.body;
     const svc = await svcFor(req.params.accountId);
-    const result = await svc.moveEmail(req.params.accountId, parseInt(req.params.uid, 10), fromFolder, toFolder);
+    const result = await svc.moveEmail(req.params.accountId, req.params.uid, fromFolder, toFolder);
     res.json(result);
   } catch (e) {
     console.error('[Email] moveEmail error:', e.message);
@@ -222,7 +223,7 @@ router.patch('/:accountId/messages/:uid/flag', async (req, res) => {
   try {
     const { flag, folder = 'INBOX' } = req.body;
     const svc = await svcFor(req.params.accountId);
-    const result = await svc.flagEmail(req.params.accountId, parseInt(req.params.uid, 10), flag, folder);
+    const result = await svc.flagEmail(req.params.accountId, req.params.uid, flag, folder);
     res.json(result);
   } catch (e) {
     console.error('[Email] flagEmail error:', e.message);
@@ -404,7 +405,7 @@ router.get('/:accountId/messages', async (req, res) => {
 router.get('/:accountId/messages/:uid', async (req, res) => {
   try {
     const { folder = 'INBOX' } = req.query;
-    const body = await fetchEmailBody(req.params.accountId, parseInt(req.params.uid, 10), folder);
+    const body = await fetchEmailBody(req.params.accountId, req.params.uid, folder);
     res.json(body);
   } catch (e) {
     console.error('[Email] fetchEmailBody error:', e.message);
