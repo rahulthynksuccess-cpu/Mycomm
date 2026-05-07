@@ -164,10 +164,11 @@ router.get('/:accountId/messages', async (req, res) => {
 // GET /api/email/:accountId/messages/:uid
 router.get('/:accountId/messages/:uid', async (req, res) => {
   try {
-    const { folder = 'INBOX' } = req.query;
+    const { folder = 'INBOX', folderId } = req.query;
     const svc = await svcFor(req.params.accountId);
     // Pass uid as string — Zoho message IDs are large 64-bit integers that must not be parsed as JS numbers
-    const body = await svc.fetchEmailBody(req.params.accountId, req.params.uid, folder);
+    // Pass folderId hint if frontend already has it (avoids extra API call)
+    const body = await svc.fetchEmailBody(req.params.accountId, req.params.uid, folder, folderId || null);
     res.json(body);
   } catch (e) {
     console.error('[Email] fetchEmailBody error:', e.message);
