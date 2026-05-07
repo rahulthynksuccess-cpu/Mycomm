@@ -274,7 +274,11 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
                   <div style={{position:'absolute',bottom:0,right:0,width:10,height:10,borderRadius:'50%',background:STATUS_COLOR[st.status]||'#9ca3af',border:'2px solid var(--bg2)'}}/>
                 </div>
                 <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:13,fontWeight:activeAccount===id?700:500,color:activeAccount===id?'var(--accent)':'var(--text)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{st.name||id}</div>
+                  <div style={{fontSize:13,fontWeight:activeAccount===id?700:500,color:activeAccount===id?'var(--accent)':'var(--text)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{
+  st.name ||
+  st.phone ||
+  `Account ${id}`
+}</div>
                   <div style={{fontSize:11,color:'var(--text3)'}}>{st.phone?'+'+st.phone:st.status}</div>
                 </div>
                 <div style={{display:'flex',gap:4,flexShrink:0}}>
