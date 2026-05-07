@@ -143,7 +143,13 @@ async function getZohoFolderId(accountId, zohoAccId, accessToken, folderName = '
 
   try {
     const data = await zohoGet(`${ZOHO_API_BASE}/${zohoAccId}/folders`, accessToken);
-    const folders = data?.data || [];
+    console.log('[Zoho] Folder API response:', JSON.stringify(data).slice(0, 1000));
+    // Zoho responses vary by account type
+const folders =
+  data?.data ||
+  data?.folders ||
+  data?.folder ||
+  [];
     for (const f of folders) {
       const name = (f.folderName || '').toUpperCase();
       const path = (f.path       || '').toUpperCase();
@@ -190,10 +196,15 @@ async function fetchEmails(accountId, options = {}) {
   const folderId = await getZohoFolderId(accountId, zohoAccId, token.access_token, folder);
   const params   = { limit, start, sortorder: 'false' }; // sortorder false = newest first
 
-  // Use folder-scoped URL if we have folderId, fallback to account-level view
-  const listUrl = folderId
-    ? `${ZOHO_API_BASE}/${zohoAccId}/folders/${folderId}/messages/view`
-    : `${ZOHO_API_BASE}/${zohoAccId}/messages/view`;
+ // Zoho API REQUIRES folderId in URL path
+// Never fallback to /messages/view because that endpoint does not exist
+if (!folderId) {
+  throw new Error(
+    `Zoho folderId not resolved for folder "${folder}". Reconnect Zoho account.`
+  );
+}
+
+const listUrl = `${ZOHO_API_BASE}/${zohoAccId}/folders/${folderId}/messages/view`;
 
   const data = await zohoGet(listUrl, token.access_token, params);
 
