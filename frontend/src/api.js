@@ -7,6 +7,9 @@ const BASE = process.env.REACT_APP_API_URL ||
 
 const api = axios.create({ baseURL: BASE, timeout: 30000 });
 
+// Longer timeout for send operations — SMTP handshakes can take 30–50s
+const sendApi = axios.create({ baseURL: BASE, timeout: 60000 });
+
 // ─── Email ─────────────────────────────────────────────
 export const emailAPI = {
   getAccounts: () => api.get('/api/email/accounts').then(r => r.data),
@@ -17,7 +20,7 @@ export const emailAPI = {
   getFolders: (accountId) => api.get(`/api/email/${accountId}/folders`).then(r => r.data),
   getMessages: (accountId, params = {}) => api.get(`/api/email/${accountId}/messages`, { params }).then(r => r.data),
   getBody: (accountId, uid, folder) => api.get(`/api/email/${accountId}/messages/${uid}`, { params: { folder } }).then(r => r.data),
-  send: (accountId, data) => api.post(`/api/email/${accountId}/send`, data).then(r => r.data),
+  send: (accountId, data) => sendApi.post(`/api/email/${accountId}/send`, data).then(r => r.data), // uses 60s timeout
   delete: (accountId, uid, folder) => api.delete(`/api/email/${accountId}/messages/${uid}`, { params: { folder } }).then(r => r.data),
   move: (accountId, uid, fromFolder, toFolder) => api.post(`/api/email/${accountId}/messages/${uid}/move`, { fromFolder, toFolder }).then(r => r.data),
   flag: (accountId, uid, flag, folder) => api.patch(`/api/email/${accountId}/messages/${uid}/flag`, { flag, folder }).then(r => r.data),
