@@ -1,413 +1,7 @@
-const Imap = require('node-imap');
-const { simpleParser } = require('mailparser');
-const nodemailer = require('nodemailer');
-
-// ─── Account config from .env ──────────────────────────
-const { pool } = require('./db');
-
-// In-memory cache so we don't hit DB on every email fetch
-let _accountsCache = null;
-
-async function getAccountsFromDb() {
-  if (!pool) return null;
-  try {
-    const r = await pool.query("SELECT value FROM wa_sessions WHERE account_id = 'system' AND key = 'email_accounts'");
-    if (r.rows.length) return JSON.parse(r.rows[0].value);
-  } catch (e) {}
-  return null;
-}
-
-function getAccounts() {
-  try {
-    return JSON.parse(process.env.EMAIL_ACCOUNTS || '[]');
-  } catch (e) {
-    return [];
-  }
-}
-
-async function getAccountsAsync() {
-  const dbAccounts = await getAccountsFromDb();
-  if (dbAccounts && dbAccounts.length) return dbAccounts;
-  return getAccounts();
-}
-
-// ─── IMAP config per provider ──────────────────────────
-function getImapConfig(account) {
-  const base = { user: account.user, password: account.password, tls: true, tlsOptions: { rejectUnauthorized: false } };
-  if (account.type === 'gmail') return { ...base, host: 'imap.gmail.com', port: 993 };
-  if (account.type === 'zoho') {
-    // Use explicitly saved region first; fall back to auto-detect from email domain
-    let region = account.zohoRegion;
-    if (!region) {
-      const u = (account.user || '').toLowerCase();
-      if (u.endsWith('@zoho.in') || u.endsWith('.in')) region = 'in';
-      else if (u.endsWith('@zoho.eu') || u.includes('.eu')) region = 'eu';
-      else if (u.endsWith('.com.au')) region = 'au';
-      else region = 'in'; // default to India (most common for this app)
-    }
-    const imapHosts = {
-      in:  'imappro.zoho.in',
-      com: 'imap.zoho.com',
-      eu:  'imap.zoho.eu',
-      au:  'imap.zoho.com.au',
-    };
-    return { ...base, host: imapHosts[region] || 'imappro.zoho.in', port: 993 };
-  }
-  // fallback: custom IMAP
-  return { ...base, host: account.imapHost, port: account.imapPort || 993 };
-}
-
-// ─── SMTP config per provider ──────────────────────────
-// Explicit timeouts prevent nodemailer from hanging indefinitely,
-// which would cause the frontend axios timeout to fire first (bad UX).
-const SMTP_TIMEOUTS = {
-  connectionTimeout: 10000,  // 10s — TCP connection to SMTP server
-  greetingTimeout:   10000,  // 10s — wait for server greeting after connect
-  socketTimeout:     40000,  // 40s — max inactivity on socket during send
-};
-
-function getSmtpConfig(account) {
-  if (account.type === 'gmail') return {
-    host: 'smtp.gmail.com', port: 587, secure: false,
-    auth: { user: account.user, pass: account.password },
-    ...SMTP_TIMEOUTS,
-  };
-  if (account.type === 'zoho') {
-    let region = account.zohoRegion;
-    if (!region) {
-      const u = (account.user || '').toLowerCase();
-      if (u.endsWith('@zoho.in') || u.endsWith('.in')) region = 'in';
-      else if (u.endsWith('@zoho.eu') || u.includes('.eu')) region = 'eu';
-      else if (u.endsWith('.com.au')) region = 'au';
-      else region = 'in';
-    }
-    const smtpHosts = {
-      in:  'smtp.zoho.in',
-      com: 'smtp.zoho.com',
-      eu:  'smtp.zoho.eu',
-      au:  'smtp.zoho.com.au',
-    };
-    return {
-      host: smtpHosts[region] || 'smtp.zoho.in', port: 587, secure: false,
-      auth: { user: account.user, pass: account.password },
-      ...SMTP_TIMEOUTS,
-    };
-  }
-  return {
-    host: account.smtpHost, port: account.smtpPort || 587, secure: false,
-    auth: { user: account.user, pass: account.password },
-    ...SMTP_TIMEOUTS,
-  };
-}
-
-// ─── Open IMAP + select mailbox ────────────────────────
-function openImap(account, mailbox = 'INBOX') {
-  return new Promise((resolve, reject) => {
-    const imap = new Imap(getImapConfig(account));
-    imap.once('ready', () => {
-      imap.openBox(mailbox, false, (err, box) => {
-        if (err) { imap.end(); return reject(err); }
-        resolve({ imap, box });
-      });
-    });
-    imap.once('error', reject);
-    imap.connect();
-  });
-}
-
-// ─── Fetch email list (headers only) ──────────────────
-async function fetchEmails(accountId, options = {}) {
-  const { folder = 'INBOX', limit = 50, page = 1, search = ['ALL'] } = options;
-  const accounts = await getAccountsAsync();
-  const account = accounts.find(a => a.id === accountId);
-  if (!account) throw new Error(`Account ${accountId} not found.`);
-
-  return new Promise((resolve, reject) => {
-    const imap = new Imap(getImapConfig(account));
-    const emails = [];
-
-    imap.once('ready', () => {
-      imap.openBox(folder, true, (err, box) => {
-        if (err) { imap.end(); return reject(err); }
-
-        const total = box.messages.total;
-        if (total === 0) { imap.end(); return resolve({ emails: [], total: 0 }); }
-
-        // Calculate range for pagination
-        const end = total - (page - 1) * limit;
-        const start = Math.max(1, end - limit + 1);
-        const range = `${start}:${end}`;
-
-        const fetch = imap.seq.fetch(range, {
-          bodies: ['HEADER.FIELDS (FROM TO SUBJECT DATE CC REPLY-TO MESSAGE-ID)', 'TEXT'],
-          struct: true,
-          size: true,
-        });
-
-        fetch.on('message', (msg, seqno) => {
-          const email = { seqno, accountId, folder, flags: [] };
-          const buffers = {};
-
-          msg.on('body', (stream, info) => {
-            buffers[info.which] = [];
-            stream.on('data', chunk => buffers[info.which].push(chunk));
-            stream.once('end', () => {
-              buffers[info.which] = Buffer.concat(buffers[info.which]).toString('utf8');
-            });
-          });
-
-          msg.once('attributes', attrs => {
-            email.uid = attrs.uid;
-            email.flags = attrs.flags;
-            email.date = attrs.date;
-          });
-
-          msg.once('end', () => {
-            const header = Imap.parseHeader(buffers['HEADER.FIELDS (FROM TO SUBJECT DATE CC REPLY-TO MESSAGE-ID)'] || '');
-            email.from    = header.from?.[0] || '';
-            email.to      = header.to?.[0] || '';
-            email.cc      = header.cc?.[0] || '';
-            email.subject = header.subject?.[0] || '(No Subject)';
-            email.messageId = header['message-id']?.[0] || '';
-            email.snippet  = (buffers['TEXT'] || '').replace(/<[^>]*>/g, '').slice(0, 200);
-            email.isRead   = email.flags.includes('\\Seen');
-            email.isStarred = email.flags.includes('\\Flagged');
-            emails.push(email);
-          });
-        });
-
-        fetch.once('error', (err) => { imap.end(); reject(err); });
-        fetch.once('end', () => {
-          imap.end();
-          resolve({ emails: emails.reverse(), total, folder });
-        });
-      });
-    });
-
-    imap.once('error', reject);
-    imap.connect();
-  });
-}
-
-// ─── Fetch full email body ─────────────────────────────
-async function fetchEmailBody(accountId, uid, folder = 'INBOX') {
-  const accounts = await getAccountsAsync();
-  const account = accounts.find(a => a.id === accountId);
-  if (!account) throw new Error(`Account ${accountId} not found.`);
-
-  return new Promise((resolve, reject) => {
-    const imap = new Imap(getImapConfig(account));
-
-    imap.once('ready', () => {
-      imap.openBox(folder, false, (err) => {
-        if (err) { imap.end(); return reject(err); }
-
-        const fetch = imap.fetch([uid], { bodies: '', struct: true, markSeen: true });
-        let buffer = '';
-
-        fetch.on('message', (msg) => {
-          msg.on('body', (stream) => {
-            stream.on('data', chunk => buffer += chunk.toString('utf8'));
-          });
-          msg.once('end', async () => {
-            const parsed = await simpleParser(buffer);
-            imap.end();
-            resolve({
-              uid,
-              from: parsed.from?.text || '',
-              to: parsed.to?.text || '',
-              cc: parsed.cc?.text || '',
-              subject: parsed.subject || '',
-              date: parsed.date,
-              textBody: parsed.text || '',
-              htmlBody: parsed.html || parsed.text || '',
-              attachments: (parsed.attachments || []).map(a => ({
-                filename: a.filename,
-                contentType: a.contentType,
-                size: a.size,
-                content: a.content.toString('base64'),
-              })),
-            });
-          });
-        });
-
-        fetch.once('error', (err) => { imap.end(); reject(err); });
-      });
-    });
-
-    imap.once('error', reject);
-    imap.connect();
-  });
-}
-
-// ─── Send email ────────────────────────────────────────
-async function sendEmail(accountId, { to, cc, bcc, subject, text, html, replyTo, attachments = [] }) {
-  const accounts = await getAccountsAsync();
-  const account = accounts.find(a => a.id === accountId);
-  if (!account) throw new Error(`Account ${accountId} not found.`);
-
-  const smtpConfig = getSmtpConfig(account);
-  console.log('[Email] Sending via SMTP:', smtpConfig.host, smtpConfig.port, 'user:', account.user);
-  const transporter = nodemailer.createTransport(smtpConfig);
-  // Don't verify() — it fails on some valid configs (Gmail App Passwords)
-  const result = await transporter.sendMail({
-    from: `"${account.label}" <${account.user}>`,
-    to, cc, bcc, subject,
-    text: text || '',
-    html: html || undefined,
-    replyTo: replyTo || account.user,
-    attachments: attachments || [],
-  });
-  console.log('[Email] Sent OK, messageId:', result.messageId);
-  return result;
-}
-
-// ─── Delete email (move to Trash) ─────────────────────
-async function deleteEmail(accountId, uid, folder = 'INBOX') {
-  const accounts = await getAccountsAsync();
-  const account = accounts.find(a => a.id === accountId);
-  if (!account) throw new Error(`Account ${accountId} not found.`);
-
-  return new Promise((resolve, reject) => {
-    const imap = new Imap(getImapConfig(account));
-    imap.once('ready', () => {
-      imap.openBox(folder, false, (err) => {
-        if (err) { imap.end(); return reject(err); }
-        imap.addFlags([uid], '\\Deleted', (err) => {
-          if (err) { imap.end(); return reject(err); }
-          imap.expunge((err) => {
-            imap.end();
-            if (err) return reject(err);
-            resolve({ deleted: true, uid });
-          });
-        });
-      });
-    });
-    imap.once('error', reject);
-    imap.connect();
-  });
-}
-
-// ─── Move email to folder ──────────────────────────────
-async function moveEmail(accountId, uid, fromFolder, toFolder) {
-  const accounts = await getAccountsAsync();
-  const account = accounts.find(a => a.id === accountId);
-  if (!account) throw new Error(`Account ${accountId} not found.`);
-
-  return new Promise((resolve, reject) => {
-    const imap = new Imap(getImapConfig(account));
-    imap.once('ready', () => {
-      imap.openBox(fromFolder, false, (err) => {
-        if (err) { imap.end(); return reject(err); }
-        imap.move([uid], toFolder, (err) => {
-          imap.end();
-          if (err) return reject(err);
-          resolve({ moved: true, uid, toFolder });
-        });
-      });
-    });
-    imap.once('error', reject);
-    imap.connect();
-  });
-}
-
-// ─── Flag / unflag email ───────────────────────────────
-async function flagEmail(accountId, uid, flag, folder = 'INBOX') {
-  const accounts = await getAccountsAsync();
-  const account = accounts.find(a => a.id === accountId);
-  if (!account) throw new Error(`Account ${accountId} not found.`);
-
-  return new Promise((resolve, reject) => {
-    const imap = new Imap(getImapConfig(account));
-    imap.once('ready', () => {
-      imap.openBox(folder, false, (err) => {
-        if (err) { imap.end(); return reject(err); }
-        const method = flag.add ? 'addFlags' : 'delFlags';
-        imap[method]([uid], flag.name, (err) => {
-          imap.end();
-          if (err) return reject(err);
-          resolve({ flagged: true, uid });
-        });
-      });
-    });
-    imap.once('error', reject);
-    imap.connect();
-  });
-}
-
-// ─── Search emails ─────────────────────────────────────
-async function searchEmails(accountId, query, folder = 'INBOX') {
-  const accounts = await getAccountsAsync();
-  const account = accounts.find(a => a.id === accountId);
-  if (!account) throw new Error(`Account ${accountId} not found.`);
-
-  return new Promise((resolve, reject) => {
-    const imap = new Imap(getImapConfig(account));
-    imap.once('ready', () => {
-      imap.openBox(folder, true, (err) => {
-        if (err) { imap.end(); return reject(err); }
-        imap.search([['OR', ['SUBJECT', query], ['FROM', query]], ['OR', ['TO', query], ['BODY', query]]], (err, uids) => {
-          if (err) { imap.end(); return reject(err); }
-          if (!uids || uids.length === 0) { imap.end(); return resolve([]); }
-
-          const fetch = imap.fetch(uids.slice(-30), {
-            bodies: 'HEADER.FIELDS (FROM TO SUBJECT DATE)',
-            struct: true,
-          });
-          const results = [];
-          fetch.on('message', (msg) => {
-            const email = {};
-            msg.on('body', (stream) => {
-              let buf = '';
-              stream.on('data', c => buf += c.toString('utf8'));
-              stream.once('end', () => {
-                const h = Imap.parseHeader(buf);
-                email.from = h.from?.[0] || '';
-                email.subject = h.subject?.[0] || '';
-                email.date = h.date?.[0] || '';
-              });
-            });
-            msg.once('attributes', a => { email.uid = a.uid; });
-            msg.once('end', () => { email.accountId = accountId; results.push(email); });
-          });
-          fetch.once('end', () => { imap.end(); resolve(results.reverse()); });
-          fetch.once('error', (err) => { imap.end(); reject(err); });
-        });
-      });
-    });
-    imap.once('error', reject);
-    imap.connect();
-  });
-}
-
-// ─── Get folder list ───────────────────────────────────
-async function getFolders(accountId) {
-  const accounts = await getAccountsAsync();
-  const account = accounts.find(a => a.id === accountId);
-  if (!account) throw new Error(`Account ${accountId} not found.`);
-
-  return new Promise((resolve, reject) => {
-    const imap = new Imap(getImapConfig(account));
-    imap.once('ready', () => {
-      imap.getBoxes((err, boxes) => {
-        imap.end();
-        if (err) return reject(err);
-        const flatten = (obj, prefix = '') => {
-          return Object.entries(obj).flatMap(([name, box]) => {
-            const full = prefix ? `${prefix}${box.delimiter}${name}` : name;
-            const children = box.children ? flatten(box.children, full) : [];
-            return [{ name: full, label: name, attribs: box.attribs || [] }, ...children];
-          });
-        };
-        resolve(flatten(boxes));
-      });
-    });
-    imap.once('error', reject);
-    imap.connect();
-  });
-}
-
-module.exports = {
+const express = require('express');
+const router  = express.Router();
+const { pool } = require('../services/db');
+const {
   getAccounts,
   fetchEmails,
   fetchEmailBody,
@@ -417,4 +11,202 @@ module.exports = {
   flagEmail,
   searchEmails,
   getFolders,
-};
+} = require('../services/email');
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+async function getAccountsFromDb() {
+  if (!pool) return null;
+  try {
+    const r = await pool.query(
+      "SELECT value FROM wa_sessions WHERE account_id = 'system' AND key = 'email_accounts'"
+    );
+    if (r.rows.length) return JSON.parse(r.rows[0].value);
+  } catch (e) {
+    console.error('[Email] DB read error:', e.message);
+  }
+  return null;
+}
+
+async function getAccountsAsync() {
+  const dbAccounts = await getAccountsFromDb();
+  if (dbAccounts && dbAccounts.length) return dbAccounts;
+  return getAccounts(); // fallback to ENV
+}
+
+async function saveAccountsToDb(accounts) {
+  if (!pool) throw new Error('No DB connection');
+  await pool.query(
+    `INSERT INTO wa_sessions (account_id, key, value)
+     VALUES ('system', 'email_accounts', $1)
+     ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value`,
+    [JSON.stringify(accounts)]
+  );
+}
+
+// ─── Account management ─────────────────────────────────────────────────────
+
+// GET /api/email/accounts
+router.get('/accounts', async (req, res) => {
+  try {
+    const accounts = await getAccountsAsync();
+    const safe = accounts.map(({ password, ...rest }) => rest);
+    res.json(safe);
+  } catch (e) {
+    console.error('[Email] getAccounts error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/email/accounts
+router.post('/accounts', async (req, res) => {
+  try {
+    const accounts = await getAccountsAsync();
+    const newAccount = { id: `email_${Date.now()}`, ...req.body };
+    accounts.push(newAccount);
+    await saveAccountsToDb(accounts);
+    const { password, ...safe } = newAccount;
+    res.json(safe);
+  } catch (e) {
+    console.error('[Email] addAccount error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /api/email/accounts/:accountId
+router.delete('/accounts/:accountId', async (req, res) => {
+  try {
+    const accounts = await getAccountsAsync();
+    const filtered = accounts.filter(a => a.id !== req.params.accountId);
+    await saveAccountsToDb(filtered);
+    res.json({ deleted: true });
+  } catch (e) {
+    console.error('[Email] deleteAccount error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/email/accounts/deduplicate
+router.post('/accounts/deduplicate', async (req, res) => {
+  try {
+    const accounts = await getAccountsAsync();
+    const seen = new Set();
+    const deduped = accounts.filter(a => {
+      if (seen.has(a.user)) return false;
+      seen.add(a.user);
+      return true;
+    });
+    await saveAccountsToDb(deduped);
+    res.json({ before: accounts.length, after: deduped.length });
+  } catch (e) {
+    console.error('[Email] deduplicate error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Per-account operations ──────────────────────────────────────────────────
+
+// GET /api/email/:accountId/folders
+router.get('/:accountId/folders', async (req, res) => {
+  try {
+    const folders = await getFolders(req.params.accountId);
+    res.json(folders);
+  } catch (e) {
+    console.error('[Email] getFolders error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/email/:accountId/messages
+router.get('/:accountId/messages', async (req, res) => {
+  try {
+    const { folder = 'INBOX', limit = 50, page = 1 } = req.query;
+    const result = await fetchEmails(req.params.accountId, {
+      folder,
+      limit: parseInt(limit, 10),
+      page:  parseInt(page,  10),
+    });
+    res.json(result);
+  } catch (e) {
+    console.error('[Email] fetchEmails error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/email/:accountId/messages/:uid
+router.get('/:accountId/messages/:uid', async (req, res) => {
+  try {
+    const { folder = 'INBOX' } = req.query;
+    const body = await fetchEmailBody(req.params.accountId, parseInt(req.params.uid, 10), folder);
+    res.json(body);
+  } catch (e) {
+    console.error('[Email] fetchEmailBody error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/email/:accountId/send
+router.post('/:accountId/send', async (req, res) => {
+  res.setTimeout(55000, () => {
+    if (!res.headersSent) {
+      res.status(504).json({ error: 'Send timed out. Check SMTP credentials or try again.' });
+    }
+  });
+  try {
+    const result = await sendEmail(req.params.accountId, req.body);
+    res.json({ ok: true, messageId: result.messageId });
+  } catch (e) {
+    console.error('[Email] sendEmail error:', e.message);
+    if (!res.headersSent) res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /api/email/:accountId/messages/:uid
+router.delete('/:accountId/messages/:uid', async (req, res) => {
+  try {
+    const { folder = 'INBOX' } = req.query;
+    const result = await deleteEmail(req.params.accountId, parseInt(req.params.uid, 10), folder);
+    res.json(result);
+  } catch (e) {
+    console.error('[Email] deleteEmail error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/email/:accountId/messages/:uid/move
+router.post('/:accountId/messages/:uid/move', async (req, res) => {
+  try {
+    const { fromFolder, toFolder } = req.body;
+    const result = await moveEmail(req.params.accountId, parseInt(req.params.uid, 10), fromFolder, toFolder);
+    res.json(result);
+  } catch (e) {
+    console.error('[Email] moveEmail error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PATCH /api/email/:accountId/messages/:uid/flag
+router.patch('/:accountId/messages/:uid/flag', async (req, res) => {
+  try {
+    const { flag, folder = 'INBOX' } = req.body;
+    const result = await flagEmail(req.params.accountId, parseInt(req.params.uid, 10), flag, folder);
+    res.json(result);
+  } catch (e) {
+    console.error('[Email] flagEmail error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/email/:accountId/search
+router.get('/:accountId/search', async (req, res) => {
+  try {
+    const { q, folder = 'INBOX' } = req.query;
+    const results = await searchEmails(req.params.accountId, q, folder);
+    res.json(results);
+  } catch (e) {
+    console.error('[Email] searchEmails error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+module.exports = router;
