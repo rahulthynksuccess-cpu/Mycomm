@@ -20,7 +20,7 @@ export const emailAPI = {
   getFolders: (accountId) => api.get(`/api/email/${accountId}/folders`).then(r => r.data),
   getMessages: (accountId, params = {}) => api.get(`/api/email/${accountId}/messages`, { params }).then(r => r.data),
   getBody: (accountId, uid, folder, folderId) => api.get(`/api/email/${accountId}/messages/${uid}`, { params: { folder, ...(folderId ? { folderId } : {}) } }).then(r => r.data),
-  send: (accountId, data) => sendApi.post(`/api/email/${accountId}/send`, data).then(r => r.data), // uses 60s timeout
+  send: (accountId, data) => sendApi.post(`/api/email/${accountId}/send`, data).then(r => r.data),
   delete: (accountId, uid, folder) => api.delete(`/api/email/${accountId}/messages/${uid}`, { params: { folder } }).then(r => r.data),
   move: (accountId, uid, fromFolder, toFolder) => api.post(`/api/email/${accountId}/messages/${uid}/move`, { fromFolder, toFolder }).then(r => r.data),
   flag: (accountId, uid, flag, folder) => api.patch(`/api/email/${accountId}/messages/${uid}/flag`, { flag, folder }).then(r => r.data),
@@ -43,9 +43,13 @@ export const waAPI = {
   getStatus: () => api.get('/api/whatsapp/status').then(r => r.data),
   addSession: (accountId) => api.post('/api/whatsapp/sessions', { accountId }).then(r => r.data),
   removeSession: (accountId) => api.delete(`/api/whatsapp/sessions/${accountId}`).then(r => r.data),
-  getChats: (accountId, limit = 500) => api.get(`/api/whatsapp/${accountId}/chats`, { params: { limit } }).then(r => r.data),
-  getMessages: (accountId, chatId, limit = 200) => api.get(`/api/whatsapp/${accountId}/chats/${encodeURIComponent(chatId)}/messages`, { params: { limit } }).then(r => r.data),
+  getChats: (accountId, limit = 1000) => api.get(`/api/whatsapp/${accountId}/chats`, { params: { limit } }).then(r => r.data),
+  // chatId contains '@' — must be encoded in URL, backend decodes it
+  getMessages: (accountId, chatId, limit = 500) => api.get(`/api/whatsapp/${accountId}/chats/${encodeURIComponent(chatId)}/messages`, { params: { limit } }).then(r => r.data),
   send: (accountId, to, body) => api.post(`/api/whatsapp/${accountId}/send`, { to, body }).then(r => r.data),
 };
+
+export default api;
+
 
 export default api;
