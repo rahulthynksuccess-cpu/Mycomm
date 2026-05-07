@@ -129,7 +129,17 @@ export default function WhatsAppTab({
   // FIXED ACCOUNTS
   // ─────────────────────────────────────────────
 
-  const allAccounts = Object.entries(statuses || {})
+ const allAccounts = Object.entries(statuses || {})
+  .filter(([id, st]) => {
+    return (
+      id &&
+      id !== 'undefined' &&
+      id !== 'null' &&
+      st &&
+      typeof st === 'object' &&
+      st.status
+    );
+  });
     .filter(([id, st]) => {
       return (
         id &&
