@@ -1,3 +1,8 @@
+/**
+ * WhatsApp service — @whiskeysockets/baileys v6.7.x
+ * Fixed: (1) contact names, (2) all chats showing, (3) latest messages
+ */
+
 const {
   default: makeWASocket,
   DisconnectReason,
