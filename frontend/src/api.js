@@ -19,7 +19,7 @@ export const emailAPI = {
   deleteAccount: (accountId) => api.delete(`/api/email/accounts/${accountId}`).then(r => r.data),
   getFolders: (accountId) => api.get(`/api/email/${accountId}/folders`).then(r => r.data),
   getMessages: (accountId, params = {}) => api.get(`/api/email/${accountId}/messages`, { params }).then(r => r.data),
-  getBody: (accountId, uid, folder) => api.get(`/api/email/${accountId}/messages/${uid}`, { params: { folder } }).then(r => r.data),
+  getBody: (accountId, uid, folder, folderId) => api.get(`/api/email/${accountId}/messages/${uid}`, { params: { folder, ...(folderId ? { folderId } : {}) } }).then(r => r.data),
   send: (accountId, data) => sendApi.post(`/api/email/${accountId}/send`, data).then(r => r.data), // uses 60s timeout
   delete: (accountId, uid, folder) => api.delete(`/api/email/${accountId}/messages/${uid}`, { params: { folder } }).then(r => r.data),
   move: (accountId, uid, fromFolder, toFolder) => api.post(`/api/email/${accountId}/messages/${uid}/move`, { fromFolder, toFolder }).then(r => r.data),
