@@ -187,46 +187,63 @@ async function zohoGet(url, accessToken, params = {}) {
 
 async function fetchEmails(accountId, options = {}) {
   const { folder = 'INBOX', limit = 50, page = 1 } = options;
-  const token     = await getValidToken(accountId);
+
+  const token = await getValidToken(accountId);
   const zohoAccId = await getZohoAccId(accountId, token.access_token);
 
-  // Zoho Mail API: GET /accounts/{accountId}/folders/{folderId}/messages/view
-  // folderId MUST be in the URL path — passing as query param causes URL_RULE_NOT_CONFIGURED
-  const start    = (page - 1) * limit;
-  const folderId = await getZohoFolderId(accountId, zohoAccId, token.access_token, folder);
-  const params   = { limit, start, sortorder: 'false' }; // sortorder false = newest first
+  const start = (page - 1) * limit;
 
- // Zoho API REQUIRES folderId in URL path
-// Never fallback to /messages/view because that endpoint does not exist
-if (!folderId) {
-  throw new Error(
-    `Zoho folderId not resolved for folder "${folder}". Reconnect Zoho account.`
+  // Resolve folderId from folder name
+  const folderId = await getZohoFolderId(
+    accountId,
+    zohoAccId,
+    token.access_token,
+    folder
   );
-}
 
-const listUrl =
-  `${ZOHO_API_BASE}/${zohoAccId}/messages/view` +
-  `?folderId=${folderId}`;
+  if (!folderId) {
+    throw new Error(
+      `Zoho folderId not resolved for folder "${folder}". Reconnect Zoho account.`
+    );
+  }
 
-  const data = await zohoGet(listUrl, token.access_token, params);
+  // CORRECT Zoho endpoint
+  const listUrl =
+    `${ZOHO_API_BASE}/${zohoAccId}/messages/view?folderId=${folderId}`;
+
+  const data = await zohoGet(
+    listUrl,
+    token.access_token,
+    {
+      limit,
+      start,
+      sortorder: 'false'
+    }
+  );
 
   const emails = (data?.data || []).map(m => ({
-    uid:       m.messageId,
-    seqno:     m.messageId,
+    uid: m.messageId,
+    seqno: m.messageId,
     accountId,
     folder,
-    folderId:  m.folderId || folderId || '',   // store folderId for use in fetchEmailBody
-    from:      m.fromAddress || '',
-    to:        m.toAddress   || '',
-    subject:   m.subject     || '(No Subject)',
-    date:      m.receivedTime ? new Date(parseInt(m.receivedTime)) : new Date(),
-    snippet:   m.summary     || '',
-    isRead:    m.isRead === '1' || m.isRead === true,
-    isStarred: m.isFlagged   === '1' || m.isFlagged === true,
-    flags:     [],
+    folderId: m.folderId || folderId || '',
+    from: m.fromAddress || '',
+    to: m.toAddress || '',
+    subject: m.subject || '(No Subject)',
+    date: m.receivedTime
+      ? new Date(parseInt(m.receivedTime))
+      : new Date(),
+    snippet: m.summary || '',
+    isRead: m.isRead === '1' || m.isRead === true,
+    isStarred: m.isFlagged === '1' || m.isFlagged === true,
+    flags: [],
   }));
 
-  return { emails, total: data?.totalCount || emails.length, folder };
+  return {
+    emails,
+    total: data?.totalCount || emails.length,
+    folder,
+  };
 }
 
 async function fetchEmailBody(accountId, messageId, folder = 'INBOX', folderIdHint = null) {
