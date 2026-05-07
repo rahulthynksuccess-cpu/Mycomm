@@ -194,6 +194,9 @@ router.get('/:accountId/messages', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('[Email] fetchEmails error:', err.message);
+    if (err.message === 'ZOHO_NOT_CONNECTED' || err.message === 'ZOHO_NEEDS_RECONNECT') {
+      return res.status(401).json({ error: err.message, needsAuth: true });
+    }
     res.status(500).json({ error: err.message });
   }
 });

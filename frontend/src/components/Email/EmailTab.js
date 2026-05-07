@@ -302,7 +302,7 @@ export default function EmailTab() {
     } catch (e) {
       const data = e.response?.data;
       if (data?.needsAuth) {
-        setFetchError('ZOHO_NOT_CONNECTED');
+        setFetchError('ZOHO_NOT_CONNECTED'); // covers ZOHO_NEEDS_RECONNECT too
       } else {
         const msg = data?.error || e.message || 'Failed to load emails';
         console.error('[Email] fetch error:', msg);
@@ -496,13 +496,13 @@ export default function EmailTab() {
           <div className="panel-scroll">
             {(fetchError === 'ZOHO_NOT_CONNECTED' || zohoNeedsConnect) && (
               <div style={{ margin: '12px 14px', padding: '14px', background: '#fff8f0', border: '1px solid #fed7aa', borderRadius: 10, fontSize: 13, color: '#92400e', lineHeight: 1.7 }}>
-                <div style={{ fontWeight: 600, marginBottom: 8 }}>📮 Zoho not connected</div>
-                <div style={{ fontSize: 12.5, marginBottom: 10 }}>Authorise Mycomm to read your Zoho emails via OAuth.</div>
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>📮 Zoho authorisation required</div>
+                <div style={{ fontSize: 12.5, marginBottom: 10 }}>Click below or go to <strong>Settings → Email</strong> and click <strong>Reconnect</strong> next to this account.</div>
                 <button
                   onClick={() => connectZoho(activeAccount)}
                   style={{ padding: '6px 16px', background: '#E05D2E', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13, cursor: 'pointer' }}
                 >
-                  🔗 Connect Zoho Account
+                  🔗 Connect / Reconnect Zoho
                 </button>
               </div>
             )}

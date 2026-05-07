@@ -122,57 +122,9 @@ async function getZohoAccId(accountId, accessToken) {
     return token.zohoAccountId;
   }
 
-  // Fallback: fetch from API (for accounts connected before this fix)
-  try {
-    const r = await axios.get('https://mail.zoho.in/api/accounts', {
-      headers: { Authorization: `Zoho-oauthtoken ${accessToken}` },
-    });
-    const data = r.data?.data;
-    if (!data || !data.length) throw new Error('No Zoho account data returned');
-    console.log('[Zoho] accounts API response (fallback):', JSON.stringify(data));
-
-    // Get our email address from DB
-    let emailAddress = null;
-    if (pool) {
-      try {
-        const r2 = await pool.query("SELECT value FROM wa_sessions WHERE account_id = 'system' AND key = 'email_accounts'");
-        if (r2.rows.length) {
-          const accs = JSON.parse(r2.rows[0].value);
-          const acc  = accs.find(a => a.id === accountId);
-          if (acc) emailAddress = acc.user.toLowerCase().trim();
-        }
-      } catch (e) {}
-    }
-
-    // Try to match by email across all possible field names
-    let matched = null;
-    if (emailAddress && data.length > 1) {
-      for (const a of data) {
-        // Flatten all string values recursively
-        const allValues = JSON.stringify(a).toLowerCase();
-        if (allValues.includes(emailAddress)) {
-          matched = a;
-          break;
-        }
-      }
-    }
-    if (!matched) matched = data[0]; // last resort
-    
-    const zohoAccId = matched.accountId;
-    if (!zohoAccId) throw new Error('No accountId in Zoho response: ' + JSON.stringify(matched).slice(0, 300));
-    
-    // Store it in token so next time we don't need to fetch
-    if (token) {
-      await saveToken(accountId, { ...token, zohoAccountId: zohoAccId });
-    }
-    
-    console.log(`[Zoho] Resolved ${accountId} (${emailAddress}) → ${zohoAccId}`);
-    _zohoAccIdCache[accountId] = zohoAccId;
-    return zohoAccId;
-  } catch (e) {
-    if (e.response) throw new Error(`Zoho accounts API ${e.response.status}: ${JSON.stringify(e.response.data)}`);
-    throw e;
-  }
+  // No stored zohoAccountId — token is from before this fix
+  // Force reconnect so we can capture the correct accountId
+  throw new Error('ZOHO_NEEDS_RECONNECT');
 }
 
 // ── Helper: axios with better error messages ──────────

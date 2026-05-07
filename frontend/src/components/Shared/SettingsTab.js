@@ -26,6 +26,16 @@ export default function SettingsTab({ socket, waStatuses, setWaStatuses }) {
     return () => window.removeEventListener('message', handler);
   }, []);
 
+  async function deleteEmailAccount(accountId, label) {
+    if (!window.confirm(`Remove "${label}" from Mycomm? This cannot be undone.`)) return;
+    try {
+      await emailAPI.deleteAccount(accountId);
+      loadEmailAccounts();
+    } catch (e) {
+      alert('Failed to remove: ' + (e.response?.data?.error || e.message));
+    }
+  }
+
   async function reconnectZoho(accountId) {
     setZohoConnecting(prev => ({ ...prev, [accountId]: true }));
     try {
@@ -154,19 +164,31 @@ export default function SettingsTab({ socket, waStatuses, setWaStatuses }) {
                         )}
                       </div>
                     </div>
-                    {isZoho && (
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      {isZoho && (
+                        <button
+                          onClick={() => reconnectZoho(acc.id)}
+                          disabled={connecting}
+                          style={{
+                            padding: '5px 12px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+                            border: '1.5px solid #E05D2E', background: 'none',
+                            color: '#E05D2E', cursor: 'pointer', whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {connecting ? '⏳ Connecting…' : connected ? '🔄 Reconnect' : '🔗 Connect Zoho'}
+                        </button>
+                      )}
                       <button
-                        onClick={() => reconnectZoho(acc.id)}
-                        disabled={connecting}
+                        onClick={() => deleteEmailAccount(acc.id, acc.label)}
                         style={{
                           padding: '5px 12px', borderRadius: 8, fontSize: 12, fontWeight: 600,
-                          border: '1.5px solid #E05D2E', background: 'none',
-                          color: '#E05D2E', cursor: 'pointer', whiteSpace: 'nowrap',
+                          border: '1.5px solid var(--red)', background: 'none',
+                          color: 'var(--red)', cursor: 'pointer', whiteSpace: 'nowrap',
                         }}
                       >
-                        {connecting ? '⏳ Connecting…' : connected ? '🔄 Reconnect' : '🔗 Connect Zoho'}
+                        🗑 Remove
                       </button>
-                    )}
+                    </div>
                   </div>
                 );
               })}
