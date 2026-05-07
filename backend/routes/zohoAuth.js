@@ -25,27 +25,63 @@ router.get('/callback', async (req, res) => {
   try {
     const token = await exchangeCode(code);
     
-    // Immediately fetch the Zoho internal accountId and store it with the token
-    // This avoids ever needing to match by email address later
+    // Fetch Zoho accounts to get the internal accountId AND verify correct user logged in
     let zohoAccountId = null;
+    let connectedEmail = null;
     try {
       const axios = require('axios');
+
+      // Get the expected email from our DB
+      const { pool } = require('../services/db');
+      let expectedEmail = null;
+      if (pool) {
+        try {
+          const r2 = await pool.query("SELECT value FROM wa_sessions WHERE account_id = 'system' AND key = 'email_accounts'");
+          if (r2.rows.length) {
+            const accs = JSON.parse(r2.rows[0].value);
+            const acc = accs.find(a => a.id === accountId);
+            if (acc) expectedEmail = acc.user.toLowerCase().trim();
+          }
+        } catch (e) {}
+      }
+
       const r = await axios.get('https://mail.zoho.in/api/accounts', {
         headers: { Authorization: `Zoho-oauthtoken ${token.access_token}` },
       });
       const data = r.data?.data || [];
-      console.log('[Zoho] OAuth accounts response:', JSON.stringify(data).slice(0, 500));
-      // The account that just logged in is the first one (or the only one)
-      // We also check userEmail claim from token if available
+      console.log('[Zoho] OAuth callback accounts:', JSON.stringify(data.map(a => ({
+        accountId: a.accountId,
+        primaryEmailAddress: a.primaryEmailAddress,
+        incomingUserName: a.incomingUserName,
+        mailboxAddress: a.mailboxAddress,
+      }))));
+
       if (data.length > 0) {
-        zohoAccountId = data[0].accountId;
+        // Find account matching expected email
+        let matched = null;
+        if (expectedEmail) {
+          matched = data.find(a => {
+            const allText = JSON.stringify(a).toLowerCase();
+            return allText.includes(expectedEmail);
+          });
+        }
+        if (!matched) matched = data[0];
+        zohoAccountId = matched.accountId;
+        connectedEmail = matched.primaryEmailAddress || matched.incomingUserName || matched.mailboxAddress;
+        
+        // Warn if wrong account connected
+        if (expectedEmail && connectedEmail && 
+            !connectedEmail.toLowerCase().includes(expectedEmail) &&
+            !expectedEmail.includes(connectedEmail.toLowerCase())) {
+          console.warn(`[Zoho] WARNING: Expected ${expectedEmail} but got ${connectedEmail}`);
+        }
       }
     } catch (e) {
       console.error('[Zoho] Could not fetch accountId at callback:', e.message);
     }
     
-    await saveToken(accountId, { ...token, obtained_at: Date.now(), zohoAccountId });
-    console.log(`[Zoho] OAuth success for account: ${accountId}, zohoAccountId: ${zohoAccountId}`);
+    await saveToken(accountId, { ...token, obtained_at: Date.now(), zohoAccountId, connectedEmail });
+    console.log(`[Zoho] OAuth success: accountId=${accountId}, zohoAccountId=${zohoAccountId}, email=${connectedEmail}`);
     res.send(`<html><body><script>
       window.opener?.postMessage({ type: 'ZOHO_AUTH_SUCCESS', accountId: '${accountId}' }, '*');
       window.close();

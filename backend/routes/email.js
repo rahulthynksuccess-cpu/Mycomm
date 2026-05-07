@@ -48,18 +48,26 @@ router.get('/accounts', async (req, res) => {
   res.json(getAccounts().map(({ id, label, user, type, color }) => ({ id, label, user, type, color })));
 });
 
-// ── GET /api/email/zoho-debug?accountId= — returns raw Zoho API response ────
+// ── GET /api/email/zoho-debug?accountId=&messageId= ─────
 router.get('/zoho-debug', async (req, res) => {
-  const { accountId } = req.query;
+  const { accountId, messageId } = req.query;
   if (!accountId) return res.status(400).json({ error: 'accountId required' });
   try {
     const token = await zoho.loadToken(accountId);
     if (!token) return res.json({ error: 'No token saved for this account' });
     const axios = require('axios');
+    if (messageId) {
+      // Debug message content
+      const zohoAccId = token.zohoAccountId;
+      const r = await axios.get(`https://mail.zoho.in/api/accounts/${zohoAccId}/messages/${messageId}/content`, {
+        headers: { Authorization: `Zoho-oauthtoken ${token.access_token}` },
+      });
+      return res.json({ raw: r.data, zohoAccId, accountId });
+    }
     const r = await axios.get('https://mail.zoho.in/api/accounts', {
       headers: { Authorization: `Zoho-oauthtoken ${token.access_token}` },
     });
-    res.json({ raw: r.data, accountId });
+    res.json({ raw: r.data, storedZohoAccountId: token.zohoAccountId, accountId });
   } catch (e) {
     res.status(500).json({ error: e.message, response: e.response?.data });
   }
@@ -73,7 +81,10 @@ router.get('/zoho-auth', (req, res) => {
     return res.status(500).json({ error: 'ZOHO_CLIENT_ID is not set in Railway environment variables.' });
   }
   try {
-    const url = zoho.getAuthUrl(accountId);
+    // Pass the email address as login_hint so Zoho pre-fills the correct account
+    const account = await getAccount(accountId);
+    const emailHint = account?.user || null;
+    const url = zoho.getAuthUrl(accountId, emailHint);
     res.json({ url });
   } catch (e) {
     res.status(500).json({ error: e.message });

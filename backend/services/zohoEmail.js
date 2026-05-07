@@ -51,7 +51,7 @@ async function deleteToken(accountId) {
 
 // ── OAuth URL ─────────────────────────────────────────
 
-function getAuthUrl(accountId) {
+function getAuthUrl(accountId, emailHint) {
   if (!ZOHO_CLIENT_ID) throw new Error('ZOHO_CLIENT_ID not set in environment variables');
   const params = new URLSearchParams({
     response_type: 'code',
@@ -62,6 +62,8 @@ function getAuthUrl(accountId) {
     state:         accountId,
     prompt:        'consent',
   });
+  // login_hint forces Zoho to show the correct email — prevents signing in with wrong account
+  if (emailHint) params.set('login_hint', emailHint);
   return `${ZOHO_ACCOUNTS_URL}/oauth/v2/auth?${params}`;
 }
 
@@ -186,26 +188,41 @@ async function fetchEmailBody(accountId, messageId, folder = 'INBOX') {
     token.access_token
   );
 
-  const d = data?.data || {};
-  // Zoho API returns body in 'content' field; mailFormat can be 'html','HTML','plaintext' etc.
-  const isHtml = d.htmlBody ||
-    (d.mailFormat || '').toLowerCase().includes('html') ||
-    (d.content || '').trimStart().startsWith('<');
-  const htmlBody = d.htmlBody || (isHtml ? (d.content || '') : '');
-  const textBody = d.textBody || (!isHtml ? (d.content || '') : '');
+  // Log raw response once to diagnose content structure
+  console.log('[Zoho] message content raw keys:', Object.keys(data?.data || data || {}));
+  
+  // Zoho can return data as object directly or nested under data.data
+  const d = data?.data || data || {};
+  
+  // Zoho content field names vary: content, htmlBody, body, mailBody
+  const rawContent = d.content || d.htmlBody || d.body || d.mailBody || d.textBody || '';
+  const format = (d.mailFormat || d.format || '').toLowerCase();
+  
+  // Detect HTML: check format field OR sniff content
+  const isHtml = format.includes('html') || 
+                 rawContent.trimStart().startsWith('<') ||
+                 rawContent.includes('<html') ||
+                 rawContent.includes('<div') ||
+                 rawContent.includes('<p>');
+  
+  const htmlBody = isHtml ? rawContent : (d.htmlBody || '');
+  const textBody = !isHtml ? rawContent : (d.textBody || '');
+
+  console.log('[Zoho] content parsed — format:', format, 'isHtml:', isHtml, 'length:', rawContent.length);
+
   return {
     uid:         messageId,
-    from:        d.fromAddress || d.from || '',
-    to:          d.toAddress   || d.to   || '',
-    cc:          d.ccAddress   || d.cc   || '',
+    from:        d.fromAddress || d.from    || d.sender || '',
+    to:          d.toAddress   || d.to      || '',
+    cc:          d.ccAddress   || d.cc      || '',
     subject:     d.subject     || '',
     date:        d.receivedTime ? new Date(parseInt(d.receivedTime)) : null,
     htmlBody,
     textBody,
     attachments: (d.attachments || []).map(a => ({
-      filename:    a.attachmentName || a.fileName || '',
-      contentType: a.type || a.contentType || 'application/octet-stream',
-      size:        a.attachmentSize || a.size || 0,
+      filename:    a.attachmentName || a.fileName    || a.name || 'attachment',
+      contentType: a.type          || a.contentType || 'application/octet-stream',
+      size:        a.attachmentSize || a.size        || 0,
     })),
   };
 }

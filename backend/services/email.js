@@ -226,16 +226,19 @@ async function sendEmail(accountId, { to, cc, bcc, subject, text, html, replyTo,
   const account = accounts.find(a => a.id === accountId);
   if (!account) throw new Error(`Account ${accountId} not found.`);
 
-  const transporter = nodemailer.createTransporter(getSmtpConfig(account));
-  await transporter.verify();
-
+  const smtpConfig = getSmtpConfig(account);
+  console.log('[Email] Sending via SMTP:', smtpConfig.host, smtpConfig.port, 'user:', account.user);
+  const transporter = nodemailer.createTransport(smtpConfig);
+  // Don't verify() — it fails on some valid configs (Gmail App Passwords)
   const result = await transporter.sendMail({
-    from: `${account.label} <${account.user}>`,
-    to, cc, bcc, subject, text, html,
+    from: `"${account.label}" <${account.user}>`,
+    to, cc, bcc, subject,
+    text: text || '',
+    html: html || undefined,
     replyTo: replyTo || account.user,
-    attachments,
+    attachments: attachments || [],
   });
-
+  console.log('[Email] Sent OK, messageId:', result.messageId);
   return result;
 }
 
