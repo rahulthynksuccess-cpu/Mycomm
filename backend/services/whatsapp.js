@@ -1,7 +1,3 @@
-/**
- * WhatsApp service — @whiskeysockets/baileys v6.7.x
- */
-
 const {
   default: makeWASocket,
   DisconnectReason,
@@ -28,7 +24,12 @@ const chatMap     = {};
 const msgMap      = {};
 const contactMap  = {};
 
+// Track whether full history sync is complete per account
+const historySyncDone = {};
+
 const MAX_ACCOUNTS = parseInt(process.env.WA_MAX_ACCOUNTS || '5');
+// Keep up to 500 messages per chat in memory/DB
+const MSG_MEMORY_LIMIT = 500;
 
 const logger = pino({ level: 'silent' });
 
@@ -47,9 +48,6 @@ function emitStatus(io, accountId, fields) {
 }
 
 function phoneFromJid(jid = '') {
-  // JID format can be: 919241400000@s.whatsapp.net
-  // or multi-device:   919241400000:12@s.whatsapp.net
-  // Strip @... first, then :deviceid, then non-digits
   return jid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
 }
 
@@ -80,19 +78,37 @@ function extractBody(msg) {
     || '';
 }
 
+/**
+ * FIX #1: Improved name resolution
+ * Priority: saved contact name > pushName/notify > phone number
+ * Never shows raw JID strings.
+ */
 function resolveName(accountId, jid, fallback) {
   const c = contactMap[accountId]?.get(jid);
+
+  // Best: saved contact name (from phone book sync)
+  if (c && c.name && c.name.trim() && !/^\d+$/.test(c.name.trim()) && !c.name.includes('@')) {
+    return c.name.trim();
+  }
+  // Second: notify/pushName (WhatsApp display name they set)
+  if (c && c.notify && c.notify.trim() && !/^\d+$/.test(c.notify.trim()) && !c.notify.includes('@')) {
+    return c.notify.trim();
+  }
+  // Third: fallback from chat/message (pushName at message time)
+  if (fallback && typeof fallback === 'string' && fallback.trim()
+      && !fallback.includes('@') && !fallback.includes(':')
+      && !/^\d+$/.test(fallback.trim())) {
+    return fallback.trim();
+  }
+  // Last resort: formatted phone number
   const phone = phoneFromJid(jid);
-  // Ignore any fallback that looks like a JID
-  const safeFallback = (fallback && !fallback.includes('@') && !fallback.includes(':')) ? fallback.trim() : null;
-  const name = c?.name || c?.notify || safeFallback;
-  // Return name if it looks like a real name (not just digits)
-  if (name && !/^\d+$/.test(name)) return name;
-  // Fall back to phone number
   return phone || jid;
 }
 
-function buildChatList(accountId, limit = 500) {
+/**
+ * FIX #2: Build chat list with higher default limit, no artificial 500 cap.
+ */
+function buildChatList(accountId, limit = 1000) {
   const map = chatMap[accountId];
   if (!map || map.size === 0) return [];
   return [...map.values()]
@@ -117,17 +133,16 @@ async function createClient(accountId, io) {
   chatMap[accountId]    = new Map();
   msgMap[accountId]     = new Map();
   contactMap[accountId] = new Map();
+  historySyncDone[accountId] = false;
 
   emitStatus(io, accountId, {
     status: 'initializing', phone: undefined, name: undefined,
     error: undefined, reason: undefined,
   });
 
-  // Try Postgres auth — fall back to files only if DB is completely unavailable
   let state, saveCreds, removeAll;
   try {
     if (!pool) throw new Error('No pool');
-    // Test connection is alive
     await pool.query('SELECT 1');
     ({ state, saveCreds, removeAll } = await usePostgresAuthState(accountId));
     console.log(`[WA] Using Postgres auth for ${accountId}`);
@@ -138,7 +153,7 @@ async function createClient(accountId, io) {
     ({ state, saveCreds } = await useMultiFileAuthState(dir));
     removeAll = async () => fs.rmSync(dir, { recursive: true, force: true });
   }
-  const version              = await getWAVersion();
+  const version = await getWAVersion();
 
   const sock = makeWASocket({
     version,
@@ -149,11 +164,16 @@ async function createClient(accountId, io) {
     },
     printQRInTerminal: false,
     browser: ['MyComms', 'Chrome', '10.0'],
+    // FIX #3: Request full history sync
     syncFullHistory: true,
     markOnlineOnConnect: true,
     connectTimeoutMs: 60_000,
     keepAliveIntervalMs: 25_000,
-
+    getMessage: async (key) => {
+      const msgs = msgMap[accountId]?.get(key.remoteJid) || [];
+      const found = msgs.find(m => m.key && m.key.id === key.id);
+      return found ? found.message : undefined;
+    },
   });
 
   clients[accountId] = sock;
@@ -175,7 +195,7 @@ async function createClient(accountId, io) {
       emitStatus(io, accountId, { status: 'ready', phone, name });
 
       // Push chats at intervals — history sync can take time
-      [2000, 5000, 10000, 20000].forEach(delay => {
+      [2000, 5000, 10000, 20000, 40000].forEach(delay => {
         setTimeout(() => pushChats(), delay);
       });
     }
@@ -209,13 +229,15 @@ async function createClient(accountId, io) {
 
   sock.ev.on('creds.update', saveCreds);
 
-  // ── Contacts: build name map ───────────────────────
-  function storeContacts(list = []) {
+  // ── FIX #1: Contacts — priority merging ───────────────────────
+  function storeContacts(list) {
+    if (!Array.isArray(list)) return;
     for (const c of list) {
       if (!c.id) continue;
       const existing = contactMap[accountId].get(c.id) || {};
-      const name   = c.name   || c.verifiedName || existing.name   || '';
-      const notify = c.notify || c.pushName     || existing.notify || '';
+      const name   = (c.name   || c.verifiedName || existing.name   || '').trim();
+      const notify = (c.notify || c.pushName     || existing.notify || '').trim();
+      // Always write — even partial is better than nothing
       if (name || notify) {
         contactMap[accountId].set(c.id, { name, notify });
       }
@@ -237,8 +259,10 @@ async function createClient(accountId, io) {
   sock.ev.on('contacts.update', (cs) => { storeContacts(cs); saveContactsToDb(); pushChats(); });
 
   // ── Chats ──────────────────────────────────────────
-  function storeChats(list = []) {
+  function storeChats(list) {
+    if (!Array.isArray(list)) return;
     for (const chat of list) {
+      if (!chat.id) continue;
       chatMap[accountId].set(chat.id, {
         ...chatMap[accountId].get(chat.id),
         ...chat,
@@ -247,12 +271,10 @@ async function createClient(accountId, io) {
   }
 
   function pushChats() {
-    const list = buildChatList(accountId);
+    const list = buildChatList(accountId, 1000);
     if (list.length > 0) {
       io.emit('wa:chats', { accountId, chats: list });
-      // Save to DB cache — only when list has meaningful size (>5 chats)
-      // This prevents a single new message from overwriting the full cache with 1 chat
-      if (pool && list.length > 0) {
+      if (pool) {
         pool.query(
           `INSERT INTO wa_sessions (account_id, key, value)
            VALUES ($1, 'chats_cache', $2)
@@ -263,17 +285,33 @@ async function createClient(accountId, io) {
     }
   }
 
-  // Load chats and messages from DB cache immediately on start
+  // Load cached data from DB immediately on start
+  // FIX #1: Load contacts FIRST, then chats, so names resolve immediately
   if (pool) {
     pool.query(
       "SELECT key, value FROM wa_sessions WHERE account_id = $1 AND key IN ('chats_cache','msgs_cache','contacts_cache')",
       [accountId]
     ).then(res => {
+      // Pass 1: contacts
+      for (const row of res.rows) {
+        if (row.key === 'contacts_cache') {
+          const cached = JSON.parse(row.value);
+          for (const [jid, c] of Object.entries(cached)) {
+            contactMap[accountId].set(jid, c);
+          }
+          console.log(`[WA] Loaded ${Object.keys(cached).length} contacts from cache for ${accountId}`);
+        }
+      }
+      // Pass 2: chats (now with contacts loaded, names resolve correctly)
       for (const row of res.rows) {
         if (row.key === 'chats_cache') {
           const cached = JSON.parse(row.value);
-          if (cached?.length) {
-            io.emit('wa:chats', { accountId, chats: cached });
+          if (cached && cached.length) {
+            const resolved = cached.map(c => ({
+              ...c,
+              name: resolveName(accountId, c.id, c.name),
+            }));
+            io.emit('wa:chats', { accountId, chats: resolved });
             console.log(`[WA] Loaded ${cached.length} chats from DB cache for ${accountId}`);
           }
         }
@@ -284,13 +322,6 @@ async function createClient(accountId, io) {
           }
           console.log(`[WA] Loaded messages cache for ${accountId}`);
         }
-        if (row.key === 'contacts_cache') {
-          const cached = JSON.parse(row.value);
-          for (const [jid, c] of Object.entries(cached)) {
-            contactMap[accountId].set(jid, c);
-          }
-          console.log(`[WA] Loaded contacts cache for ${accountId}`);
-        }
       }
     }).catch(() => {});
   }
@@ -299,29 +330,36 @@ async function createClient(accountId, io) {
   sock.ev.on('chats.update', (cs) => { storeChats(cs); pushChats(); });
   sock.ev.on('chats.set',    (cs) => { storeChats(cs.chats || []); pushChats(); });
 
-  // ── History sync: contacts FIRST then chats ────────
-  sock.ev.on('messaging-history.set', ({ chats: hc, contacts: hct, messages: hm }) => {
-    if (hct?.length) storeContacts(hct);
-    if (hc?.length)  storeChats(hc);
-    if (hm?.length) {
-      const byChat = {};
+  // ── FIX #3: History sync — process contacts first, store ALL messages ────────
+  sock.ev.on('messaging-history.set', ({ chats: hc, contacts: hct, messages: hm, isLatest }) => {
+    // Contacts first so chat names work
+    if (hct && hct.length) {
+      storeContacts(hct);
+      saveContactsToDb();
+    }
+    if (hc && hc.length) storeChats(hc);
+
+    if (hm && hm.length) {
       for (const msg of hm) {
-        const jid = msg.key?.remoteJid;
+        const jid = msg.key && msg.key.remoteJid;
         if (!jid || !msg.message) continue;
         if (!msgMap[accountId].has(jid)) msgMap[accountId].set(jid, []);
-        msgMap[accountId].get(jid).push(msg);
-        byChat[jid] = true;
+        const arr = msgMap[accountId].get(jid);
+        // No duplicates
+        if (!arr.find(m => m.key && m.key.id === msg.key.id)) {
+          arr.push(msg);
+        }
       }
-      // Sort each chat's messages by timestamp
-      for (const [jid] of Object.entries(byChat)) {
-        const msgs = msgMap[accountId].get(jid) || [];
+      // Sort each chat oldest→newest, trim to limit
+      for (const [, msgs] of msgMap[accountId]) {
         msgs.sort((a, b) => Number(a.messageTimestamp) - Number(b.messageTimestamp));
+        if (msgs.length > MSG_MEMORY_LIMIT) msgs.splice(0, msgs.length - MSG_MEMORY_LIMIT);
       }
-      // Save messages to DB cache
+      // Persist to DB
       if (pool) {
         const allMsgs = {};
         for (const [jid, msgs] of msgMap[accountId]) {
-          allMsgs[jid] = msgs.slice(-200);
+          allMsgs[jid] = msgs.slice(-MSG_MEMORY_LIMIT);
         }
         pool.query(
           `INSERT INTO wa_sessions (account_id, key, value) VALUES ($1, 'msgs_cache', $2)
@@ -330,11 +368,16 @@ async function createClient(accountId, io) {
         ).catch(() => {});
       }
     }
-    setTimeout(() => pushChats(), 2000);
+
+    if (isLatest) {
+      historySyncDone[accountId] = true;
+      console.log(`[WA] Full history sync complete for ${accountId}`);
+    }
+
+    setTimeout(() => pushChats(), 1000);
   });
 
   // ── Incoming messages ──────────────────────────────
-  // Message types that are internal WhatsApp protocol — never show to user
   const SKIP_TYPES = new Set([
     'protocolMessage', 'senderKeyDistributionMessage', 'messageContextInfo',
     'appStateSyncKeyShare', 'reaction', 'pollUpdateMessage',
@@ -344,17 +387,17 @@ async function createClient(accountId, io) {
     for (const msg of msgs) {
       const jid = msg.key.remoteJid || '';
       if (!jid) continue;
-      // Skip protocol/system messages
       const msgType = Object.keys(msg.message || {})[0];
       if (!msg.message || SKIP_TYPES.has(msgType)) continue;
 
-      // store message
       if (!msgMap[accountId].has(jid)) msgMap[accountId].set(jid, []);
       const arr = msgMap[accountId].get(jid);
-      arr.push(msg);
-      if (arr.length > 1000) arr.splice(0, arr.length - 1000);
+      // No duplicates
+      if (!arr.find(m => m.key && m.key.id === msg.key.id)) {
+        arr.push(msg);
+        if (arr.length > MSG_MEMORY_LIMIT) arr.splice(0, arr.length - MSG_MEMORY_LIMIT);
+      }
 
-      // update chat preview
       const existing = chatMap[accountId].get(jid) || { id: jid };
       chatMap[accountId].set(jid, {
         ...existing,
@@ -362,23 +405,22 @@ async function createClient(accountId, io) {
         lastMessage: extractBody(msg),
       });
 
-      // Save updated messages for this chat to DB
+      // FIX #1: Save pushName immediately in contactMap
+      if (msg.pushName && msg.pushName.trim()) {
+        const ec = contactMap[accountId].get(jid) || {};
+        if (!ec.name) {
+          contactMap[accountId].set(jid, { ...ec, notify: msg.pushName.trim() });
+        }
+      }
+
       if (pool) {
-        const chatMsgs = (msgMap[accountId].get(jid) || []).slice(-200);
+        const chatMsgs = (msgMap[accountId].get(jid) || []).slice(-MSG_MEMORY_LIMIT);
         pool.query(
           `INSERT INTO wa_sessions (account_id, key, value)
            VALUES ($1, $2, $3)
            ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value`,
           [accountId, `msgs_${jid}`, JSON.stringify(chatMsgs)]
         ).catch(() => {});
-      }
-
-      // cache pushName if we have no better name
-      if (msg.pushName) {
-        const ec = contactMap[accountId].get(jid) || {};
-        if (!ec.name && !ec.notify) {
-          contactMap[accountId].set(jid, { ...ec, notify: msg.pushName });
-        }
       }
 
       if (type === 'notify' && !msg.key.fromMe) {
@@ -389,12 +431,12 @@ async function createClient(accountId, io) {
           from:        resolveName(accountId, jid, msg.pushName),
           fromNumber:  jid,
           body:        extractBody(msg),
-          type:        Object.keys(msg.message || {})[0] || 'unknown',
+          type:        msgType || 'unknown',
           timestamp:   Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
           isGroup:     isJidGroup(jid),
           chatName:    resolveName(accountId, jid, msg.pushName),
-          hasMedia:    !!(msg.message?.imageMessage || msg.message?.videoMessage
-                        || msg.message?.audioMessage || msg.message?.documentMessage),
+          hasMedia:    !!(msg.message && (msg.message.imageMessage || msg.message.videoMessage
+                        || msg.message.audioMessage || msg.message.documentMessage)),
         });
         pushChats();
       }
@@ -427,7 +469,6 @@ async function disconnectSession(accountId) {
     try { clients[accountId].end(undefined); } catch (_) {}
     delete clients[accountId];
   }
-  // Delete session from DB or files
   if (dbAvailable && pool) {
     await pool.query('DELETE FROM wa_sessions WHERE account_id = $1', [accountId]).catch(() => {});
   }
@@ -437,6 +478,7 @@ async function disconnectSession(accountId) {
   delete msgMap[accountId];
   delete contactMap[accountId];
   delete statuses[accountId];
+  delete historySyncDone[accountId];
 }
 
 async function sendWAMessage(accountId, to, body) {
@@ -447,26 +489,33 @@ async function sendWAMessage(accountId, to, body) {
   await sock.sendMessage(jid, { text: body });
 }
 
-async function getRecentChats(accountId, limit = 50) {
+async function getRecentChats(accountId, limit = 1000) {
   return buildChatList(accountId, limit);
 }
 
-async function getChatMessages(accountId, chatId, limit = 200) {
-  let msgs = msgMap[accountId]?.get(chatId) || [];
+/**
+ * FIX #3: Return latest messages sorted oldest→newest.
+ * Mirrors WhatsApp Web: open chat → see most recent messages, scroll up for older.
+ */
+async function getChatMessages(accountId, chatId, limit = 500) {
+  let msgs = msgMap[accountId] && msgMap[accountId].get(chatId)
+    ? msgMap[accountId].get(chatId).slice()
+    : [];
 
-  // If no cached messages, try loading from DB (per-chat first, then full blob)
+  // Load from DB if not in memory
   if (msgs.length === 0 && pool) {
     try {
-      // Try per-chat key first (most recent save)
       let res = await pool.query(
         "SELECT value FROM wa_sessions WHERE account_id = $1 AND key = $2",
         [accountId, `msgs_${chatId}`]
       );
       if (res.rows.length) {
-        msgs = JSON.parse(res.rows[0].value);
-        if (msgs.length) msgMap[accountId].set(chatId, msgs);
+        msgs = JSON.parse(res.rows[0].value) || [];
+        if (msgs.length && msgMap[accountId]) {
+          msgs.sort((a, b) => Number(a.messageTimestamp) - Number(b.messageTimestamp));
+          msgMap[accountId].set(chatId, msgs);
+        }
       }
-      // Fall back to full msgs_cache blob
       if (!msgs.length) {
         res = await pool.query(
           "SELECT value FROM wa_sessions WHERE account_id = $1 AND key = 'msgs_cache'",
@@ -474,15 +523,20 @@ async function getChatMessages(accountId, chatId, limit = 200) {
         );
         if (res.rows.length) {
           const allMsgs = JSON.parse(res.rows[0].value);
-          msgs = allMsgs[chatId] || [];
-          if (msgs.length) msgMap[accountId].set(chatId, msgs);
+          msgs = (allMsgs && allMsgs[chatId]) || [];
+          if (msgs.length && msgMap[accountId]) {
+            msgs.sort((a, b) => Number(a.messageTimestamp) - Number(b.messageTimestamp));
+            msgMap[accountId].set(chatId, msgs);
+          }
         }
       }
     } catch (e) {}
   }
 
+  // Ensure sorted oldest→newest
+  msgs.sort((a, b) => Number(a.messageTimestamp) - Number(b.messageTimestamp));
 
-
+  // Return the LATEST `limit` messages (tail of sorted array)
   return msgs.slice(-limit).map(m => ({
     id:        m.key.id,
     body:      extractBody(m),
@@ -496,7 +550,6 @@ async function getChatMessages(accountId, chatId, limit = 200) {
 function getStatuses() { return statuses; }
 
 async function getSavedSessionIds() {
-  // Try Postgres directly — retry for up to 10s
   if (pool) {
     for (let i = 0; i < 10; i++) {
       try {
@@ -511,7 +564,6 @@ async function getSavedSessionIds() {
       }
     }
   }
-  // Fall back to file system
   console.log('[WA] Loading session IDs from files');
   if (!fs.existsSync(SESSIONS_DIR)) return [];
   return fs.readdirSync(SESSIONS_DIR)
