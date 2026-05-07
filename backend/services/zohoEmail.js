@@ -184,29 +184,25 @@ async function fetchEmails(accountId, options = {}) {
   const token     = await getValidToken(accountId);
   const zohoAccId = await getZohoAccId(accountId, token.access_token);
 
-  // Zoho Mail API: GET /accounts/{accountId}/messages/view
-  // Required params: limit, start (0-based offset)
-  // Pass folderId so the correct mailbox folder is queried
+  // Zoho Mail API: GET /accounts/{accountId}/folders/{folderId}/messages/view
+  // folderId MUST be in the URL path — passing as query param causes URL_RULE_NOT_CONFIGURED
   const start    = (page - 1) * limit;
   const folderId = await getZohoFolderId(accountId, zohoAccId, token.access_token, folder);
   const params   = { limit, start, sortorder: 'false' }; // sortorder false = newest first
-  if (folderId) {
-    params.folderId = folderId;
-  } else if (folder && folder.toUpperCase() !== 'INBOX') {
-    params.folderpath = folder;
-  }
 
-  const data = await zohoGet(
-    `${ZOHO_API_BASE}/${zohoAccId}/messages/view`,
-    token.access_token,
-    params
-  );
+  // Use folder-scoped URL if we have folderId, fallback to account-level view
+  const listUrl = folderId
+    ? `${ZOHO_API_BASE}/${zohoAccId}/folders/${folderId}/messages/view`
+    : `${ZOHO_API_BASE}/${zohoAccId}/messages/view`;
+
+  const data = await zohoGet(listUrl, token.access_token, params);
 
   const emails = (data?.data || []).map(m => ({
     uid:       m.messageId,
     seqno:     m.messageId,
     accountId,
     folder,
+    folderId:  m.folderId || folderId || '',   // store folderId for use in fetchEmailBody
     from:      m.fromAddress || '',
     to:        m.toAddress   || '',
     subject:   m.subject     || '(No Subject)',
@@ -220,20 +216,23 @@ async function fetchEmails(accountId, options = {}) {
   return { emails, total: data?.totalCount || emails.length, folder };
 }
 
-async function fetchEmailBody(accountId, messageId, folder = 'INBOX') {
+async function fetchEmailBody(accountId, messageId, folder = 'INBOX', folderIdHint = null) {
   const token     = await getValidToken(accountId);
   const zohoAccId = await getZohoAccId(accountId, token.access_token);
 
-  // Resolve folderId — Zoho content API requires it, otherwise returns URL_RULE_NOT_CONFIGURED
-  const folderId = await getZohoFolderId(accountId, zohoAccId, token.access_token, folder);
-  const params   = {};
-  if (folderId) params.folderId = folderId;
+  // Zoho Mail API REQUIRES folderId in the URL PATH:
+  // GET /accounts/{accountId}/folders/{folderId}/messages/{messageId}/content
+  // Passing folderId as a query param causes URL_RULE_NOT_CONFIGURED (404)
+  // Use the hint if provided (faster), otherwise resolve from folder name
+  const folderId = folderIdHint || await getZohoFolderId(accountId, zohoAccId, token.access_token, folder);
+  if (!folderId) {
+    throw new Error(`Could not resolve folderId for folder "${folder}" — try reconnecting Zoho`);
+  }
 
   // messageId MUST remain a string — large Zoho IDs lose precision if parsed as JS number
   const data = await zohoGet(
-    `${ZOHO_API_BASE}/${zohoAccId}/messages/${String(messageId)}/content`,
-    token.access_token,
-    params
+    `${ZOHO_API_BASE}/${zohoAccId}/folders/${folderId}/messages/${String(messageId)}/content`,
+    token.access_token
   );
 
   // Log raw response once to diagnose content structure
