@@ -12,6 +12,7 @@ const ZOHO_REDIRECT_URI  = process.env.ZOHO_REDIRECT_URI;
 const ZOHO_ACCOUNTS_URL  = 'https://accounts.zoho.in';
 const ZOHO_API_BASE      = 'https://mail.zoho.in/api/accounts';
 const _zohoAccIdCache    = {}; // cache: our accountId → Zoho internal accountId
+const _zohoFolderCache   = {}; // cache: `${accountId}:${folderName}` → Zoho folderId
 
 // ── Token storage ─────────────────────────────────────
 
@@ -47,6 +48,10 @@ async function deleteToken(accountId) {
     );
   } catch (e) {}
   delete _zohoAccIdCache[accountId];
+  // Clear all cached folder IDs for this account
+  Object.keys(_zohoFolderCache).forEach(k => {
+    if (k.startsWith(`${accountId}:`)) delete _zohoFolderCache[k];
+  });
 }
 
 // ── OAuth URL ─────────────────────────────────────────
@@ -129,6 +134,34 @@ async function getZohoAccId(accountId, accessToken) {
   throw new Error('ZOHO_NEEDS_RECONNECT');
 }
 
+// ── Zoho folder ID resolution ─────────────────────────
+// Zoho content API requires folderId; resolve folder name → folderId with caching
+
+async function getZohoFolderId(accountId, zohoAccId, accessToken, folderName = 'INBOX') {
+  const cacheKey = `${accountId}:${folderName.toUpperCase()}`;
+  if (_zohoFolderCache[cacheKey]) return _zohoFolderCache[cacheKey];
+
+  try {
+    const data = await zohoGet(`${ZOHO_API_BASE}/${zohoAccId}/folders`, accessToken);
+    const folders = data?.data || [];
+    for (const f of folders) {
+      const name = (f.folderName || '').toUpperCase();
+      const path = (f.path       || '').toUpperCase();
+      const key1 = `${accountId}:${name}`;
+      const key2 = `${accountId}:${path}`;
+      if (f.folderId) {
+        _zohoFolderCache[key1] = f.folderId;
+        if (path) _zohoFolderCache[key2] = f.folderId;
+      }
+    }
+  } catch (e) {
+    console.warn('[Zoho] Could not fetch folders for folderId resolution:', e.message);
+  }
+
+  // Return resolved id or fall back to INBOX id or undefined
+  return _zohoFolderCache[cacheKey] || _zohoFolderCache[`${accountId}:INBOX`];
+}
+
 // ── Helper: axios with better error messages ──────────
 async function zohoGet(url, accessToken, params = {}) {
   try {
@@ -153,12 +186,20 @@ async function fetchEmails(accountId, options = {}) {
 
   // Zoho Mail API: GET /accounts/{accountId}/messages/view
   // Required params: limit, start (0-based offset)
-  // Optional: folderId or folderpath
-  const start = (page - 1) * limit;
+  // Pass folderId so the correct mailbox folder is queried
+  const start    = (page - 1) * limit;
+  const folderId = await getZohoFolderId(accountId, zohoAccId, token.access_token, folder);
+  const params   = { limit, start, sortorder: 'false' }; // sortorder false = newest first
+  if (folderId) {
+    params.folderId = folderId;
+  } else if (folder && folder.toUpperCase() !== 'INBOX') {
+    params.folderpath = folder;
+  }
+
   const data = await zohoGet(
     `${ZOHO_API_BASE}/${zohoAccId}/messages/view`,
     token.access_token,
-    { limit, start, sortorder: 'false' } // sortorder false = newest first
+    params
   );
 
   const emails = (data?.data || []).map(m => ({
@@ -183,9 +224,16 @@ async function fetchEmailBody(accountId, messageId, folder = 'INBOX') {
   const token     = await getValidToken(accountId);
   const zohoAccId = await getZohoAccId(accountId, token.access_token);
 
+  // Resolve folderId — Zoho content API requires it, otherwise returns URL_RULE_NOT_CONFIGURED
+  const folderId = await getZohoFolderId(accountId, zohoAccId, token.access_token, folder);
+  const params   = {};
+  if (folderId) params.folderId = folderId;
+
+  // messageId MUST remain a string — large Zoho IDs lose precision if parsed as JS number
   const data = await zohoGet(
-    `${ZOHO_API_BASE}/${zohoAccId}/messages/${messageId}/content`,
-    token.access_token
+    `${ZOHO_API_BASE}/${zohoAccId}/messages/${String(messageId)}/content`,
+    token.access_token,
+    params
   );
 
   // Log raw response once to diagnose content structure
@@ -259,11 +307,21 @@ async function getFolders(accountId) {
     token.access_token
   );
 
-  return (data?.data || []).map(f => ({
-    name:  f.folderName,
-    label: f.folderName,
-    path:  f.path || f.folderName,
-  }));
+  return (data?.data || []).map(f => {
+    // Populate folder cache as a side-effect
+    if (f.folderId) {
+      const name = (f.folderName || '').toUpperCase();
+      const path = (f.path       || '').toUpperCase();
+      _zohoFolderCache[`${accountId}:${name}`] = f.folderId;
+      if (path) _zohoFolderCache[`${accountId}:${path}`] = f.folderId;
+    }
+    return {
+      name:     f.folderName,
+      label:    f.folderName,
+      path:     f.path || f.folderName,
+      folderId: f.folderId,
+    };
+  });
 }
 
 async function deleteEmail(accountId, messageId, folder = 'INBOX') {
