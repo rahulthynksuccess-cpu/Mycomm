@@ -35,15 +35,15 @@ export default function App() {
 
     socket.on('connect', () => {
       console.log('[socket] connected');
-      // On reconnect, fetch status ONLY to learn about accounts we don't know yet
-      // Never overwrite existing socket state
+      // Always fetch current status on connect/reconnect — accounts may have
+      // restored on the server while socket was disconnected
       waAPI.getStatus().then(data => {
         if (!data || !Object.keys(data).length) return;
         setWaStatuses(prev => {
           const next = { ...prev };
           for (const [id, s] of Object.entries(data)) {
-            // Only add accounts not already tracked — never overwrite
-            if (!next[id]) next[id] = s;
+            // Merge: keep existing phone/name if server hasn't updated yet
+            next[id] = { ...(next[id] || {}), ...s };
           }
           return next;
         });
@@ -98,6 +98,32 @@ export default function App() {
     { id: 'calendar', label: 'Calendar', icon: '📅' },
     { id: 'settings', label: 'Settings', icon: '⚙️' },
   ];
+
+  // Poll status every 10s — reliable fallback so all accounts always appear
+  // even if socket events were missed during startup
+  useEffect(() => {
+    const poll = () => {
+      waAPI.getStatus().then(data => {
+        if (!data || !Object.keys(data).length) return;
+        setWaStatuses(prev => {
+          const next = { ...prev };
+          let changed = false;
+          for (const [id, s] of Object.entries(data)) {
+            const cur = next[id] || {};
+            // Add missing accounts; update status/phone/name if changed
+            if (!next[id] || cur.status !== s.status || cur.phone !== s.phone || cur.name !== s.name) {
+              next[id] = { ...cur, ...s };
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+      }).catch(() => {});
+    };
+    poll(); // immediate on mount
+    const t = setInterval(poll, 10000);
+    return () => clearInterval(t);
+  }, []);
 
   const readyCount = Object.values(waStatuses).filter(s => s.status === 'ready').length;
 

@@ -16,7 +16,7 @@ const {
   isJidGroup,
 } = require('@whiskeysockets/baileys');
 
-const { usePostgresAuthState } = require('./pgAuthState');
+const { usePostgresAuthState, getAllAccountIds, removeAccountRegistry } = require('./pgAuthState');
 const { pool, dbAvailable }  = require('./db');
 const { Boom }  = require('@hapi/boom');
 const pino      = require('pino');
@@ -82,9 +82,31 @@ function extractBody(msg) {
     || '';
 }
 
+// Normalize JID — Baileys sometimes uses @c.us, API uses @s.whatsapp.net; treat as same
+function normalizeJid(jid) {
+  if (!jid) return jid;
+  return jid.replace('@c.us', '@s.whatsapp.net').split(':')[0];
+}
+
 // FIX #1: Resolve display name — saved contact > pushName > phone number
+// Tries both @s.whatsapp.net and @c.us variants so lookup always works
 function resolveName(accountId, jid, fallback) {
-  const c = contactMap[accountId] && contactMap[accountId].get(jid);
+  const map = contactMap[accountId];
+  if (!map) return fallback || phoneFromJid(jid) || jid;
+
+  // Try direct lookup, then normalized, then @c.us variant
+  const variants = [
+    jid,
+    normalizeJid(jid),
+    jid && jid.replace('@s.whatsapp.net', '@c.us'),
+  ].filter(Boolean);
+
+  let c = null;
+  for (const v of variants) {
+    c = map.get(v);
+    if (c) break;
+  }
+
   if (c && c.name && c.name.trim() && !/^\d+$/.test(c.name.trim()) && !c.name.includes('@')) {
     return c.name.trim();
   }
@@ -179,11 +201,19 @@ async function createClient(accountId, io) {
     if (!Array.isArray(list)) return;
     for (const c of list) {
       if (!c.id) continue;
-      const existing = contactMap[accountId].get(c.id) || {};
+      const existing = contactMap[accountId].get(normalizeJid(c.id)) || {};
       const name   = ((c.name || c.verifiedName || existing.name || '')).trim();
       const notify = ((c.notify || c.pushName || existing.notify || '')).trim();
       if (name || notify) {
-        contactMap[accountId].set(c.id, { name: name, notify: notify });
+        const entry = { name: name, notify: notify };
+        // Store under normalized JID (@s.whatsapp.net) so lookup always works
+        contactMap[accountId].set(normalizeJid(c.id), entry);
+        // Also store under @c.us variant for backwards compat
+        if (c.id.includes('@s.whatsapp.net')) {
+          contactMap[accountId].set(c.id.replace('@s.whatsapp.net', '@c.us'), entry);
+        } else if (c.id.includes('@c.us')) {
+          contactMap[accountId].set(c.id.replace('@c.us', '@s.whatsapp.net'), entry);
+        }
       }
     }
   }
@@ -191,7 +221,10 @@ async function createClient(accountId, io) {
   function saveContactsToDb() {
     if (!pool) return;
     const obj = {};
-    contactMap[accountId].forEach(function(c, jid) { obj[jid] = c; });
+    contactMap[accountId].forEach(function(c, jid) {
+      // Only save @s.whatsapp.net keys to avoid duplicates in DB
+      if (!jid.includes('@c.us')) obj[jid] = c;
+    });
     pool.query(
       'INSERT INTO wa_sessions (account_id, key, value) VALUES ($1, \'contacts_cache\', $2)' +
       ' ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value',
@@ -252,7 +285,12 @@ async function createClient(accountId, io) {
           try {
             const cached = JSON.parse(row.value);
             Object.entries(cached).forEach(function(entry) {
-              contactMap[accountId].set(entry[0], entry[1]);
+              const jid = entry[0];
+              const c   = entry[1];
+              const norm = normalizeJid(jid);
+              contactMap[accountId].set(norm, c);
+              // Also store @c.us variant so both formats resolve
+              contactMap[accountId].set(norm.replace('@s.whatsapp.net', '@c.us'), c);
             });
             console.log('[WA] Loaded ' + Object.keys(cached).length + ' contacts from cache for ' + accountId);
           } catch (_) {}
@@ -328,20 +366,28 @@ async function createClient(accountId, io) {
       const statusCode = (lastDisconnect && lastDisconnect.error instanceof Boom)
         ? lastDisconnect.error.output && lastDisconnect.error.output.statusCode
         : null;
-      const loggedOut  = statusCode === DisconnectReason.loggedOut;
+      const loggedOut  = statusCode === DisconnectReason.loggedOut;  // 401 — user logged out from phone
+
+      // IMPORTANT: Never treat badSession as permanent — it can fire on network issues.
+      // Only wipe creds on confirmed 401 logout. Everything else: reconnect.
       const badSession = statusCode === DisconnectReason.badSession;
 
       delete clients[accountId];
 
-      if (loggedOut || badSession) {
+      if (loggedOut) {
+        // Confirmed logout from phone — safe to wipe creds
         await removeAll().catch(function() {});
         delete chatMap[accountId];
         delete msgMap[accountId];
         delete contactMap[accountId];
-        emitStatus(io, accountId, {
-          status: 'auth_failure',
-          error: loggedOut ? 'Logged out from phone' : 'Bad session — re-scan QR',
-        });
+        emitStatus(io, accountId, { status: 'auth_failure', error: 'Logged out from phone — re-scan QR' });
+      } else if (badSession) {
+        // Bad session can be a transient error — DON'T wipe creds, just reconnect
+        console.log('[WA] Bad session for ' + accountId + ', reconnecting (NOT wiping creds)...');
+        emitStatus(io, accountId, { status: 'disconnected', reason: 'bad_session' });
+        setTimeout(function() {
+          if (!clients[accountId]) createClient(accountId, io).catch(console.error);
+        }, 5000);
       } else {
         emitStatus(io, accountId, { status: 'disconnected', reason: String(statusCode) });
         const delay = statusCode === DisconnectReason.restartRequired ? 2000 : 8000;
@@ -356,6 +402,15 @@ async function createClient(accountId, io) {
 
   sock.ev.on('contacts.upsert', function(cs) { storeContacts(cs); saveContactsToDb(); pushChats(); });
   sock.ev.on('contacts.update', function(cs) { storeContacts(cs); saveContactsToDb(); pushChats(); });
+  // contacts.set fires once with ALL contacts — most important for name resolution
+  sock.ev.on('contacts.set',   function(payload) {
+    const list = payload.contacts || payload;
+    storeContacts(Array.isArray(list) ? list : []);
+    saveContactsToDb();
+    // Re-push chats now that all names are resolved
+    setTimeout(pushChats, 200);
+    setTimeout(pushChats, 2000);
+  });
 
   sock.ev.on('chats.upsert', function(cs) { storeChats(cs); pushChats(); });
   sock.ev.on('chats.update', function(cs) { storeChats(cs); pushChats(); });
@@ -522,10 +577,17 @@ async function initWhatsApp(io) {
   await getWAVersion().catch(function() {});
   const saved = await getSavedSessionIds();
   console.log('[WA] Restoring sessions:', saved);
+
+  // Immediately set initializing status for ALL accounts so frontend shows them
+  for (const id of saved) {
+    statuses[id] = { status: 'initializing' };
+  }
+
   for (let i = 0; i < saved.length; i++) {
     if (i > 0) await new Promise(function(r) { setTimeout(r, 3000); });
     await createClient(saved[i], io).catch(function(e) {
       console.error('[WA] Restore failed for', saved[i], e.message);
+      statuses[saved[i]] = { status: 'error', error: e.message };
     });
   }
   console.log('[WA] Sessions restored');
@@ -542,7 +604,9 @@ async function disconnectSession(accountId) {
     try { clients[accountId].end(undefined); } catch (_) {}
     delete clients[accountId];
   }
-  if (dbAvailable && pool) {
+  if (pool) {
+    // Remove from registry — intentional user removal
+    await removeAccountRegistry(accountId).catch(function() {});
     await pool.query('DELETE FROM wa_sessions WHERE account_id = $1', [accountId]).catch(function() {});
   }
   const dir = path.join(SESSIONS_DIR, 'session-' + accountId);
@@ -669,30 +733,65 @@ async function getChatMessages(accountId, chatId, limit) {
   });
 }
 
-function getStatuses() { return statuses; }
+function getStatuses() {
+  // Include all registered accounts, even ones still initializing
+  const result = Object.assign({}, statuses);
+  return result;
+}
+
+// Called at startup to ensure all registered accounts appear in status
+async function ensureAllAccountsInStatus(io) {
+  if (!pool) return;
+  try {
+    const ids = await getAllAccountIds();
+    for (const id of ids) {
+      if (!statuses[id]) {
+        statuses[id] = { status: 'initializing' };
+        io.emit('wa:status', { accountId: id, status: 'initializing' });
+      }
+    }
+  } catch (_) {}
+}
 
 async function getSavedSessionIds() {
   if (pool) {
     for (let i = 0; i < 10; i++) {
       try {
+        // PRIMARY: use wa_accounts registry — survives session data wipes
+        let ids = await getAllAccountIds();
+        if (ids.length > 0) {
+          console.log('[WA] Loaded session IDs from wa_accounts registry:', ids);
+          return ids;
+        }
+        // FALLBACK: old method — scan wa_sessions for creds keys
         const res = await pool.query(
           "SELECT DISTINCT account_id FROM wa_sessions WHERE key = 'creds'"
         );
-        console.log('[WA] Loaded session IDs from Postgres:', res.rows.map(function(r) { return r.account_id; }));
-        return res.rows.map(function(r) { return r.account_id; });
+        ids = res.rows.map(function(r) { return r.account_id; });
+        if (ids.length > 0) {
+          console.log('[WA] Loaded session IDs from wa_sessions (legacy):', ids);
+          // Migrate them into wa_accounts so future restarts use the registry
+          for (const id of ids) {
+            await pool.query(
+              'INSERT INTO wa_accounts (account_id) VALUES ($1) ON CONFLICT DO NOTHING',
+              [id]
+            ).catch(function() {});
+          }
+          return ids;
+        }
+        return [];
       } catch (e) {
         console.log('[WA] DB not ready yet, retrying (' + (i+1) + '/10)...');
         await new Promise(function(r) { setTimeout(r, 3000); });
       }
     }
   }
+  // File fallback
   console.log('[WA] Loading session IDs from files');
   if (!fs.existsSync(SESSIONS_DIR)) return [];
   return fs.readdirSync(SESSIONS_DIR)
     .filter(function(d) {
       if (!d.startsWith('session-')) return false;
-      const accountId = d.replace('session-', '');
-      if (/^\d+$/.test(accountId)) return false;
       return fs.existsSync(path.join(SESSIONS_DIR, d, 'creds.json'));
     })
     .map(function(d) { return d.replace('session-', ''); });

@@ -8,6 +8,7 @@ const strColor = (s='') => {
   return c[Math.abs(h)%c.length];
 };
 const IST = 'Asia/Kolkata';
+const phoneFromJid = (jid='') => jid.split('@')[0].split(':')[0].replace(/[^0-9]/g,'');
 const fmtTime = (ts, full=false) => {
   if(!ts) return '';
   const d=new Date(ts*1000), now=new Date();
@@ -353,7 +354,7 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
                     </div>
                     <div style={{flex:1,minWidth:0}}>
                       <div style={{display:'flex',justifyContent:'space-between',marginBottom:2}}>
-                        <span style={{fontSize:13.5,color:'var(--text)',fontWeight:chat.unreadCount?600:400,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:160}}>{cleanName(chat.name)||chat.id}</span>
+                        <span style={{fontSize:13.5,color:'var(--text)',fontWeight:chat.unreadCount?600:400,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:160}}>{chat.name||phoneFromJid(chat.id)||chat.id}</span>
                         <span style={{fontSize:11,color:'var(--text3)',flexShrink:0}}>{fmtTime(chat.lastMessageTime)}</span>
                       </div>
                       <div className="email-preview">{chat.lastMessage||'…'}</div>
@@ -382,7 +383,7 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
               <div style={{padding:'12px 18px',borderBottom:'1px solid var(--border)',background:'var(--bg2)',display:'flex',alignItems:'center',gap:12,flexShrink:0}}>
                 <div className="avatar" style={{background:strColor(activeChat.name)}}>{activeChat.isGroup?'👥':initials(activeChat.name)}</div>
                 <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontWeight:600,fontSize:14}}>{cleanName(activeChat.name)||activeChat.id}</div>
+                  <div style={{fontWeight:600,fontSize:14}}>{activeChat.name||phoneFromJid(activeChat.id)||activeChat.id}</div>
                   <div style={{fontSize:12,color:'var(--text3)',display:'flex',alignItems:'center',gap:6}}>
                     {/* Show the CONTACT's phone number (from JID), not the connected account's number */}
                     {!activeChat.isGroup && activeChat.id && (

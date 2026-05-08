@@ -5,7 +5,11 @@ const {
   disconnectSession, getStatuses, sendWAMessage,
 } = require('../services/whatsapp');
 
-router.get('/status', (req, res) => res.json(getStatuses()));
+router.get('/status', (req, res) => {
+  const s = getStatuses();
+  // Always return an object even if empty
+  res.json(s || {});
+});
 
 router.post('/sessions', async (req, res) => {
   try {

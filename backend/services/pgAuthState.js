@@ -21,6 +21,14 @@ async function ensureTable() {
       PRIMARY KEY (account_id, key)
     )
   `);
+  // Separate registry table — tracks accounts even if session data is wiped
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS wa_accounts (
+      account_id  TEXT PRIMARY KEY,
+      created_at  TIMESTAMPTZ DEFAULT NOW(),
+      last_seen   TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
 }
 
 // Call once at startup
@@ -32,6 +40,13 @@ function getTableReady() {
 
 async function usePostgresAuthState(accountId) {
   await getTableReady();
+
+  // Register this account so it survives session wipes
+  await pool.query(
+    `INSERT INTO wa_accounts (account_id, last_seen) VALUES ($1, NOW())
+     ON CONFLICT (account_id) DO UPDATE SET last_seen = NOW()`,
+    [accountId]
+  ).catch(function() {});  // non-fatal
 
   // ── Read a key ───────────────────────────────────────
   async function readData(key) {
@@ -110,11 +125,23 @@ async function usePostgresAuthState(accountId) {
     },
   };
 
+  const state = { creds, keys };
+
   return {
-    state:     { creds, keys },
-    saveCreds: () => writeData('creds', creds),
+    state,
+    saveCreds: () => writeData('creds', state.creds),
     removeAll,
   };
 }
 
-module.exports = { usePostgresAuthState };
+async function getAllAccountIds() {
+  await getTableReady();
+  const res = await pool.query('SELECT account_id FROM wa_accounts ORDER BY created_at');
+  return res.rows.map(function(r) { return r.account_id; });
+}
+
+async function removeAccountRegistry(accountId) {
+  await pool.query('DELETE FROM wa_accounts WHERE account_id = $1', [accountId]).catch(function() {});
+}
+
+module.exports = { usePostgresAuthState, getAllAccountIds, removeAccountRegistry };
