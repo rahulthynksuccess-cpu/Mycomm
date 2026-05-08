@@ -50,6 +50,3 @@ export const waAPI = {
 };
 
 export default api;
-
-
-export default api;

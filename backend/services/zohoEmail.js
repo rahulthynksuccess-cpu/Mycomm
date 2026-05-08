@@ -308,10 +308,14 @@ async function sendEmail(accountId, { to, cc, bcc, subject, text, html }) {
   const token     = await getValidToken(accountId);
   const zohoAccId = await getZohoAccId(accountId, token.access_token);
 
+  // Zoho requires fromAddress — use the email stored at OAuth time
+  const fromAddress = token.connectedEmail || accountId;
+
   try {
     const r = await axios.post(
       `${ZOHO_API_BASE}/${zohoAccId}/messages`,
       {
+        fromAddress: fromAddress,
         toAddress:   to,
         ccAddress:   cc  || '',
         bccAddress:  bcc || '',
