@@ -362,36 +362,42 @@ async function createClient(accountId, io) {
   sock.ev.on('chats.set',    function(cs) { storeChats(cs.chats || []); pushChats(); });
 
   // ── History sync ──────────────────────────────────────────────────────────
+  // messaging-history.set delivers chat metadata + STUB messages (msg.message=undefined).
+  // Stubs tell us the chat exists and its last-message timestamp — store chats but not stubs.
+  // Real message content arrives via messages.upsert with type='append'/'notify'.
   sock.ev.on('messaging-history.set', function(payload) {
-    const hc  = payload.chats;
-    const hct = payload.contacts;
-    const hm  = payload.messages;
+    const hc       = payload.chats;
+    const hct      = payload.contacts;
+    const hm       = payload.messages;
     const isLatest = payload.isLatest;
 
-    // Always process contacts first
-    if (hct && hct.length) {
-      storeContacts(hct);
-      saveContactsToDb();
-    }
-    if (hc && hc.length) storeChats(hc);
+    if (hct && hct.length) { storeContacts(hct); saveContactsToDb(); }
+    if (hc  && hc.length)  { storeChats(hc); }
 
+    // Only store messages that have actual content (not stubs)
     if (hm && hm.length) {
+      let stored = 0;
       for (const msg of hm) {
         const jid = msg.key && msg.key.remoteJid;
-        if (!jid || !msg.message) continue;
+        if (!jid) continue;
+        // Accept messages with real content OR with a body we can extract
+        const body = extractBody(msg);
+        if (!body && !msg.message) continue;  // pure stub — skip
         if (!msgMap[accountId].has(jid)) msgMap[accountId].set(jid, []);
         const arr = msgMap[accountId].get(jid);
         if (!arr.find(function(m) { return m.key && m.key.id === msg.key.id; })) {
           arr.push(msg);
+          stored++;
         }
       }
-      // Sort and trim
-      msgMap[accountId].forEach(function(msgs) {
-        msgs.sort(function(a, b) { return Number(a.messageTimestamp) - Number(b.messageTimestamp); });
-        if (msgs.length > MSG_MEMORY_LIMIT) msgs.splice(0, msgs.length - MSG_MEMORY_LIMIT);
-      });
-      // FIX #3: Save per-chat keys so getChatMessages always finds them
-      savePerChatMsgKeys();
+      if (stored > 0) {
+        msgMap[accountId].forEach(function(msgs) {
+          msgs.sort(function(a, b) { return Number(a.messageTimestamp) - Number(b.messageTimestamp); });
+          if (msgs.length > MSG_MEMORY_LIMIT) msgs.splice(0, msgs.length - MSG_MEMORY_LIMIT);
+        });
+        savePerChatMsgKeys();
+        console.log('[WA] History: stored ' + stored + ' messages for ' + accountId);
+      }
     }
 
     if (isLatest) {
@@ -402,35 +408,64 @@ async function createClient(accountId, io) {
     setTimeout(pushChats, 500);
   });
 
-  // ── Incoming messages ─────────────────────────────────────────────────────
+  // ── Incoming & historical messages via messages.upsert ────────────────────
+  // type='notify'  → new real-time message
+  // type='append'  → historical messages delivered after history sync
+  // type='history' → also historical (some Baileys versions)
+  // We store ALL types; only emit wa:message for new inbound (notify, not fromMe)
   const SKIP_TYPES = new Set([
     'protocolMessage', 'senderKeyDistributionMessage', 'messageContextInfo',
     'appStateSyncKeyShare', 'reaction', 'pollUpdateMessage',
   ]);
 
+  // Debounce DB writes for history batches — avoid flooding Postgres
+  let saveTimer = null;
+  function scheduleSave() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(function() { savePerChatMsgKeys(); }, 1500);
+  }
+
   sock.ev.on('messages.upsert', function(payload) {
     const msgs = payload.messages;
-    const type = payload.type;
+    const type = payload.type;  // 'notify' | 'append' | 'history'
+    let changed = false;
+
     for (const msg of msgs) {
       const jid = (msg.key && msg.key.remoteJid) || '';
       if (!jid) continue;
+
+      // Status broadcast JIDs — ignore
+      if (jid === 'status@broadcast') continue;
+
       const msgType = Object.keys(msg.message || {})[0];
-      if (!msg.message || SKIP_TYPES.has(msgType)) continue;
+
+      // Skip protocol noise — but only if it has no extractable body
+      if (msg.message && SKIP_TYPES.has(msgType)) continue;
+
+      // Must have some content
+      const body = extractBody(msg);
+      if (!body && !msg.message) continue;
 
       if (!msgMap[accountId].has(jid)) msgMap[accountId].set(jid, []);
       const arr = msgMap[accountId].get(jid);
       if (!arr.find(function(m) { return m.key && m.key.id === msg.key.id; })) {
         arr.push(msg);
         if (arr.length > MSG_MEMORY_LIMIT) arr.splice(0, arr.length - MSG_MEMORY_LIMIT);
+        changed = true;
       }
 
+      // Update chat metadata with latest message info
       const existing = chatMap[accountId].get(jid) || { id: jid };
-      chatMap[accountId].set(jid, Object.assign({}, existing, {
-        conversationTimestamp: msg.messageTimestamp,
-        lastMessage: extractBody(msg),
-      }));
+      const existingTs = Number(existing.conversationTimestamp) || 0;
+      const msgTs = Number(msg.messageTimestamp) || 0;
+      if (msgTs >= existingTs || !existing.lastMessage) {
+        chatMap[accountId].set(jid, Object.assign({}, existing, {
+          conversationTimestamp: msg.messageTimestamp,
+          lastMessage: body || existing.lastMessage || '',
+        }));
+      }
 
-      // Capture pushName immediately
+      // Capture pushName
       if (msg.pushName && msg.pushName.trim()) {
         const ec = contactMap[accountId].get(jid) || {};
         if (!ec.name) {
@@ -438,16 +473,7 @@ async function createClient(accountId, io) {
         }
       }
 
-      // Always write per-chat key so getChatMessages gets latest
-      if (pool) {
-        const chatMsgs = (msgMap[accountId].get(jid) || []).slice(-MSG_MEMORY_LIMIT);
-        pool.query(
-          'INSERT INTO wa_sessions (account_id, key, value) VALUES ($1, $2, $3)' +
-          ' ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value',
-          [accountId, 'msgs_' + jid, JSON.stringify(chatMsgs)]
-        ).catch(function() {});
-      }
-
+      // Emit new inbound message notification
       if (type === 'notify' && !(msg.key && msg.key.fromMe)) {
         io.emit('wa:message', {
           accountId:   accountId,
@@ -455,16 +481,36 @@ async function createClient(accountId, io) {
           chatId:      jid,
           from:        resolveName(accountId, jid, msg.pushName),
           fromNumber:  jid,
-          body:        extractBody(msg),
+          body:        body,
           type:        msgType || 'unknown',
-          timestamp:   Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000),
+          timestamp:   msgTs || Math.floor(Date.now() / 1000),
           isGroup:     isJidGroup(jid),
           chatName:    resolveName(accountId, jid, msg.pushName),
           hasMedia:    !!(msg.message && (
                          msg.message.imageMessage || msg.message.videoMessage ||
                          msg.message.audioMessage || msg.message.documentMessage)),
         });
+      }
+    }
+
+    if (changed) {
+      if (type === 'notify') {
+        // Immediate save + push for real-time messages
+        for (const jid of new Set(msgs.map(function(m) { return m.key && m.key.remoteJid; }).filter(Boolean))) {
+          if (pool) {
+            const chatMsgs = (msgMap[accountId].get(jid) || []).slice(-MSG_MEMORY_LIMIT);
+            pool.query(
+              'INSERT INTO wa_sessions (account_id, key, value) VALUES ($1, $2, $3)' +
+              ' ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value',
+              [accountId, 'msgs_' + jid, JSON.stringify(chatMsgs)]
+            ).catch(function() {});
+          }
+        }
         pushChats();
+      } else {
+        // Debounced save for historical batches
+        scheduleSave();
+        setTimeout(pushChats, 1000);
       }
     }
   });
@@ -571,20 +617,31 @@ async function getChatMessages(accountId, chatId, limit) {
     ? msgMap[accountId].get(chatId).slice()
     : [];
 
+  console.log('[WA] getChatMessages', accountId, chatId, '— in-memory:', msgs.length);
+
   if (msgs.length === 0 && pool) {
     try {
-      const res = await pool.query(
-        'SELECT key, value FROM wa_sessions WHERE account_id = $1 AND key IN ($2, \'msgs_cache\')',
+      // Try per-chat key first (most up-to-date)
+      const perChatRes = await pool.query(
+        'SELECT value FROM wa_sessions WHERE account_id = $1 AND key = $2',
         [accountId, 'msgs_' + chatId]
       );
-      const perChat = res.rows.find(function(r) { return r.key === 'msgs_' + chatId; });
-      const bulk    = res.rows.find(function(r) { return r.key === 'msgs_cache'; });
+      if (perChatRes.rows.length) {
+        msgs = JSON.parse(perChatRes.rows[0].value) || [];
+        console.log('[WA] getChatMessages loaded', msgs.length, 'from per-chat key for', chatId);
+      }
 
-      if (perChat) {
-        msgs = JSON.parse(perChat.value) || [];
-      } else if (bulk) {
-        const allMsgs = JSON.parse(bulk.value);
-        msgs = (allMsgs && allMsgs[chatId]) || [];
+      // Fallback: bulk msgs_cache
+      if (msgs.length === 0) {
+        const bulkRes = await pool.query(
+          'SELECT value FROM wa_sessions WHERE account_id = $1 AND key = $2',
+          [accountId, 'msgs_cache']
+        );
+        if (bulkRes.rows.length) {
+          const allMsgs = JSON.parse(bulkRes.rows[0].value);
+          msgs = (allMsgs && allMsgs[chatId]) || [];
+          console.log('[WA] getChatMessages loaded', msgs.length, 'from bulk cache for', chatId);
+        }
       }
 
       if (msgs.length && msgMap[accountId]) {
@@ -595,6 +652,8 @@ async function getChatMessages(accountId, chatId, limit) {
       console.error('[WA] getChatMessages DB error:', e.message);
     }
   }
+
+  console.log('[WA] getChatMessages returning', Math.min(msgs.length, limit), 'of', msgs.length, 'msgs for', chatId);
 
   msgs.sort(function(a, b) { return Number(a.messageTimestamp) - Number(b.messageTimestamp); });
 

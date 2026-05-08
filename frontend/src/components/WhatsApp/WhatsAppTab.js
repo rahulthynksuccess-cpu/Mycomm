@@ -217,17 +217,30 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
 
   // ── Chat & messaging ───────────────────────────────
   async function openChat(chat) {
-    setActiveChat(chat); setMessages([]); setMsgLimit(500); setLoading(true);
+    setActiveChat(chat);
+    setMessages([]);
+    setMsgLimit(500);
+    setLoading(true);
     setChats(prev=>({...prev,[activeAccount]:(prev[activeAccount]||[]).map(c=>c.id===chat.id?{...c,unreadCount:0}:c)}));
-    try {
-      // FIX #3: load up to 500 msgs (backend returns LATEST 500 sorted oldest→newest)
-      const m=await waAPI.getMessages(activeAccount,chat.id,500);
-      setMessages(m);
+
+    let loaded = false;
+    // Try up to 4 times — messages may still be syncing from WhatsApp
+    for (const delay of [0, 2000, 5000, 10000]) {
+      if (delay > 0) await new Promise(r => setTimeout(r, delay));
+      try {
+        const m = await waAPI.getMessages(activeAccount, chat.id, 500);
+        if (Array.isArray(m) && m.length > 0) {
+          setMessages(m);
+          loaded = true;
+          break;
+        }
+      } catch(e) { console.error('getMessages error:', e); }
     }
-    catch(e){ console.error(e); }
+
+    if (!loaded) setMessages([]); // show "No messages" only after all retries
     setLoading(false);
-    // Always scroll to bottom after loading — show most recent messages first
-    setTimeout(()=>messagesEndRef.current?.scrollIntoView({behavior:'instant'}),80);
+    // Scroll to bottom — show most recent messages
+    setTimeout(()=>messagesEndRef.current?.scrollIntoView({behavior:'instant'}), 100);
   }
 
   async function sendNewChat() {
@@ -365,17 +378,20 @@ export default function WhatsAppTab({ socket, statuses, setWaStatuses, qrCodes, 
             </div>
           ) : (
             <>
-              {/* Chat header — shows selected account + chat info */}
+              {/* Chat header — shows chat contact info + which account is connected */}
               <div style={{padding:'12px 18px',borderBottom:'1px solid var(--border)',background:'var(--bg2)',display:'flex',alignItems:'center',gap:12,flexShrink:0}}>
                 <div className="avatar" style={{background:strColor(activeChat.name)}}>{activeChat.isGroup?'👥':initials(activeChat.name)}</div>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontWeight:600,fontSize:14}}>{cleanName(activeChat.name)||activeChat.id}</div>
                   <div style={{fontSize:12,color:'var(--text3)',display:'flex',alignItems:'center',gap:6}}>
-                    {activeChat.isGroup&&<span>Group ·</span>}
+                    {/* Show the CONTACT's phone number (from JID), not the connected account's number */}
+                    {!activeChat.isGroup && activeChat.id && (
+                      <span>+{activeChat.id.split('@')[0].split(':')[0]}</span>
+                    )}
+                    {activeChat.isGroup && <span>Group</span>}
                     <span style={{display:'flex',alignItems:'center',gap:4}}>
                       <div style={{width:8,height:8,borderRadius:'50%',background:STATUS_COLOR[statuses[activeAccount]?.status]||'#9ca3af'}}/>
-                      {statuses[activeAccount]?.name||activeAccount}
-                      {statuses[activeAccount]?.phone&&<span>· +{statuses[activeAccount].phone}</span>}
+                      via {statuses[activeAccount]?.name||activeAccount}
                     </span>
                   </div>
                 </div>
